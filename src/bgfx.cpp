@@ -464,6 +464,27 @@ namespace bgfx
 		return &g_internalData;
 	}
 
+	// Static globals — NOT in any struct to avoid layout changes
+	static uintptr_t s_skipPresent = 0; // atomic-compatible type, 0=false 1=true
+
+	uintptr_t getInternalTexturePtr(TextureHandle _handle)
+	{
+		// Stub — not used currently. Calling getInternal() from API thread
+		// races with render thread. Use bgfx blit+readTexture path instead.
+		BX_UNUSED(_handle);
+		return 0;
+	}
+
+	void setSkipPresent(bool _skip)
+	{
+		__atomic_store_n(&s_skipPresent, _skip ? (uintptr_t)1 : (uintptr_t)0, __ATOMIC_RELEASE);
+	}
+
+	bool getSkipPresentState()
+	{
+		return __atomic_load_n(&s_skipPresent, __ATOMIC_ACQUIRE) != 0;
+	}
+
 	uintptr_t overrideInternal(TextureHandle _handle, uintptr_t _ptr, uint16_t _layerIndex)
 	{
 		BGFX_CHECK_RENDER_THREAD();
@@ -2138,6 +2159,7 @@ namespace bgfx
 		m_exit    = false;
 		m_flipped = true;
 		m_debug   = BGFX_DEBUG_NONE;
+		__atomic_store_n(&s_skipPresent, (uintptr_t)0, __ATOMIC_RELEASE);
 		m_frameTimeLast = bx::getHPCounter();
 		m_flipAfterRender = !!(m_init.resolution.reset & BGFX_RESET_FLIP_AFTER_RENDER);
 
@@ -2637,6 +2659,7 @@ namespace bgfx
 		if (m_rendererInitialized
 		&& !m_flipped)
 		{
+			// skipPresent is read via getSkipPresentState() in renderer_mtl.cpp
 			m_renderCtx->flip();
 			m_flipped = true;
 
@@ -3453,6 +3476,8 @@ namespace bgfx
 						setDirectAccessPtr(handle, ptr);
 					}
 
+					// Native texture pointer read on-demand via getInternalTexturePtr()
+
 					bx::MemoryReader reader(mem->data, mem->size);
 					bx::Error err;
 
@@ -3556,6 +3581,7 @@ namespace bgfx
 					TextureHandle handle;
 					_cmdbuf.read(handle);
 
+					// No cache to clear — native pointer read on-demand
 					m_renderCtx->destroyTexture(handle);
 				}
 				break;

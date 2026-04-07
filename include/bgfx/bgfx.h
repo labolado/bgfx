@@ -3893,6 +3893,14 @@ namespace bgfx
 	///
 	const InternalData* getInternalData();
 
+	/// Get native API pointer to texture (read-only, does not modify texture).
+	/// @returns Native API pointer, or 0 if texture not created yet.
+	/// @warning Must be called only on render thread.
+	uintptr_t getInternalTexturePtr(TextureHandle _handle);
+
+	/// Skip present/flip on the next frame() call (for offscreen capture without flash).
+	void setSkipPresent(bool _skip);
+
 	/// Override internal texture with externally created texture. Previously
 	/// created internal texture will released.
 	///

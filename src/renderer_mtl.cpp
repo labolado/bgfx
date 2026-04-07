@@ -1720,7 +1720,10 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 					{
 						if (NULL != frameBuffer.m_swapChain->m_drawable)
 						{
-							m_commandBuffer->presentDrawable( (MTL::Drawable*)frameBuffer.m_swapChain->m_drawable);
+							if (!getSkipPresentState())
+							{
+								m_commandBuffer->presentDrawable( (MTL::Drawable*)frameBuffer.m_swapChain->m_drawable);
+							}
 							MTL_RELEASE_I(frameBuffer.m_swapChain->m_drawable);
 						}
 					}
@@ -3985,7 +3988,12 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 	{
 		if (NULL == m_drawableTexture)
 		{
-			m_drawable = m_metalLayer->nextDrawable();
+			// When skipPresent is active, don't acquire a real drawable from the swap chain.
+			// Use a dummy texture instead, so the swap chain state stays clean.
+			if (!getSkipPresentState())
+			{
+				m_drawable = m_metalLayer->nextDrawable();
+			}
 
 			if (m_drawable != NULL)
 			{

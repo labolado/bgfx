@@ -3728,6 +3728,9 @@ namespace bgfx
 		uint8_t* m_data;
 	};
 
+	// Defined in bgfx.cpp — no struct members needed, avoids layout changes
+	bool getSkipPresentState();
+
 	struct BX_NO_VTABLE RendererContextI
 	{
 		virtual ~RendererContextI() = 0;

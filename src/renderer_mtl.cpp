@@ -3855,6 +3855,11 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 				: s_textureFormat[resolution.formatColor].m_fmt) )
 				;
 
+			// NOTE: macOS WindowServer applies sRGB→Display P3 color management
+			// to all CAMetalLayer content. setColorspace has no effect (verified).
+			// See docs/tasks/COLOR-SHIFT-ANALYSIS.md for full analysis.
+			// This only affects P3 displays; sRGB displays show identical colors.
+
 			retain(m_metalLayer);
 		}
 
@@ -3911,6 +3916,8 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 				? s_textureFormat[formatColor].m_fmtSrgb
 				: s_textureFormat[formatColor].m_fmt) )
 				;
+
+			// Color management: see comment in SwapChainMtl::init
 		}
 
 		MTL::TextureDescriptor* desc = newTextureDescriptor();

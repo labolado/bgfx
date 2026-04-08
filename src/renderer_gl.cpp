@@ -3308,7 +3308,7 @@ namespace bgfx { namespace gl
 
 		void flip() override
 		{
-			if (m_flip)
+			if (m_flip && !getSkipPresentState())
 			{
 				for (uint32_t ii = 1, num = m_numWindows; ii < num; ++ii)
 				{

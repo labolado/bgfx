@@ -136,6 +136,14 @@ ios-arm64-release: .build/projects/gmake-ios-arm64 ## Build - iOS ARM64 Release
 	$(MAKE) -R -C .build/projects/gmake-ios-arm64 config=release
 ios-arm64: ios-arm64-debug ios-arm64-release ## Build - iOS ARM64 Debug and Release
 
+.build/projects/gmake-ios-simulator:
+	$(GENIE) --gcc=ios-simulator gmake
+ios-simulator-debug: .build/projects/gmake-ios-simulator ## Build - iOS Simulator Debug
+	$(MAKE) -R -C .build/projects/gmake-ios-simulator config=debug
+ios-simulator-release: .build/projects/gmake-ios-simulator ## Build - iOS Simulator Release
+	$(MAKE) -R -C .build/projects/gmake-ios-simulator config=release
+ios-simulator: ios-simulator-debug ios-simulator-release ## Build - iOS Simulator Debug and Release
+
 .build/projects/gmake-rpi:
 	$(GENIE) --gcc=rpi gmake
 rpi-debug: .build/projects/gmake-rpi ## Build - RasberryPi Debug

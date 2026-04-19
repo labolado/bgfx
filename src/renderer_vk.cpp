@@ -6433,10 +6433,14 @@ retry:
 		ici.queueFamilyIndexCount = 0;
 		ici.initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
 		ici.sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
+		// Write-only render targets (e.g. swapchain depth attachments) don't need
+		// SAMPLED or TRANSFER usage. Requesting unnecessary usage flags can cause
+		// driver crashes on devices with limited format+usage support (PowerVR/MediaTek).
+		const bool isWriteOnlyRT = 0 != (m_flags & BGFX_TEXTURE_RT_WRITE_ONLY);
 		ici.usage                 = 0
-			| VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+			| (isWriteOnlyRT ? 0 : VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 			| VK_IMAGE_USAGE_TRANSFER_DST_BIT
-			| VK_IMAGE_USAGE_SAMPLED_BIT
+			| (isWriteOnlyRT ? 0 : VK_IMAGE_USAGE_SAMPLED_BIT)
 			| (m_flags & BGFX_TEXTURE_RT_MASK
 				? (m_aspectFlags & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
 					? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
@@ -7956,8 +7960,10 @@ retry:
 
 		if (bimg::isDepth(bimg::TextureFormat::Enum(m_resolution.formatDepthStencil) ) )
 		{
-			// the spec guarantees that at least one of D24S8 and D32FS8 is supported
-			VkFormat depthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
+			// Try depth formats in order of preference, with actual usage validation.
+			// Some drivers (e.g. PowerVR/MediaTek) crash if given an unsupported
+			// format+usage combination, so we probe before creating.
+			VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 
 			if (g_caps.formats[m_resolution.formatDepthStencil] & requiredCaps)
 			{
@@ -7966,6 +7972,43 @@ retry:
 			else if (g_caps.formats[TextureFormat::D24S8] & requiredCaps)
 			{
 				depthFormat = s_textureFormat[TextureFormat::D24S8].m_fmtDsv;
+			}
+
+			// Fallback chain: probe with actual usage flags to avoid driver crashes
+			if (VK_FORMAT_UNDEFINED == depthFormat)
+			{
+				const VkFormat depthCandidates[] = {
+					VK_FORMAT_D24_UNORM_S8_UINT,
+					VK_FORMAT_D32_SFLOAT_S8_UINT,
+					VK_FORMAT_D32_SFLOAT,
+					VK_FORMAT_D16_UNORM,
+				};
+				const VkImageUsageFlags depthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+				for (uint32_t ii = 0; ii < BX_COUNTOF(depthCandidates); ++ii)
+				{
+					VkImageFormatProperties ifp;
+					VkResult probeResult = vkGetPhysicalDeviceImageFormatProperties(
+						s_renderVK->m_physicalDevice
+						, depthCandidates[ii]
+						, VK_IMAGE_TYPE_2D
+						, VK_IMAGE_TILING_OPTIMAL
+						, depthUsage
+						, 0
+						, &ifp
+						);
+					if (VK_SUCCESS == probeResult)
+					{
+						depthFormat = depthCandidates[ii];
+						BX_TRACE("Depth format fallback: selected %d", depthFormat);
+						break;
+					}
+				}
+			}
+
+			if (VK_FORMAT_UNDEFINED == depthFormat)
+			{
+				depthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT; // last resort
 			}
 
 			result = m_backBufferDepthStencil.create(

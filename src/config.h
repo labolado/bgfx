@@ -191,7 +191,7 @@
 /// Maximum number of Vulkan descriptor sets allocated per frame. Default is
 /// 1024. Each draw/compute call may consume one descriptor set.
 #ifndef BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME
-#	define BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME 1024
+#	define BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME 4096
 #endif // BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME
 
 /// Enable use of tinystl instead of std containers for internal data

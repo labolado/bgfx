@@ -3944,6 +3944,12 @@ VK_IMPORT_DEVICE
 			++s_perfPipelineLookupCount;
 			ProgramVK& program = m_program[_program.idx];
 
+			if (NULL == program.m_vsh)
+			{
+				// Program was destroyed before this frame rendered (API/render thread race).
+				return VK_NULL_HANDLE;
+			}
+
 			_state &= 0
 				| BGFX_STATE_WRITE_MASK
 				| BGFX_STATE_DEPTH_TEST_MASK
@@ -4463,6 +4469,11 @@ VK_IMPORT_DEVICE
 				{
 					arena.cache[_key] = { descriptorSet };
 				}
+			}
+			else
+			{
+				// Pool exhausted: force reclaim on next frame so the pool gets reset.
+				arena.overflow = true;
 			}
 
 			return descriptorSet;
@@ -9868,6 +9879,11 @@ retry:
 							descriptorSetCount++;
 						}
 
+						if (VK_NULL_HANDLE == currentDescriptorSet)
+						{
+							continue;
+						}
+
 						vkCmdBindDescriptorSets(
 							  m_commandBuffer
 							, VK_PIPELINE_BIND_POINT_COMPUTE
@@ -10007,6 +10023,11 @@ retry:
 							, key.m_program
 							, uint8_t(draw.m_instanceDataStride/16)
 							);
+
+					if (VK_NULL_HANDLE == pipeline)
+					{
+						continue;
+					}
 
 					if (currentPipeline != pipeline)
 					{
@@ -10159,6 +10180,11 @@ retry:
 								);
 
 							descriptorSetCount++;
+						}
+
+						if (VK_NULL_HANDLE == currentDescriptorSet)
+						{
+							continue;
 						}
 
 						vkCmdBindDescriptorSets(

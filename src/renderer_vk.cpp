@@ -2118,6 +2118,7 @@ VK_IMPORT_DEVICE
 			errorState = ErrorState::CommandQueueCreated;
 
 			m_presentElapsed = 0;
+			m_lastFrameNumDraw = 1; // assume first frame has content
 
 			{
 				m_resolution = _init.resolution;
@@ -2463,6 +2464,22 @@ VK_IMPORT_DEVICE
 
 		void flip() override
 		{
+			if (getSkipPresentState()
+			||  0 == m_lastFrameNumDraw)
+			{
+				// Skip present for empty frames (e.g. scene transitions)
+				// to avoid showing a cleared/black backbuffer.
+				for (uint16_t ii = 0; ii < m_numWindows; ++ii)
+				{
+					FrameBufferVK& fb = isValid(m_windows[ii])
+						? m_frameBuffers[m_windows[ii].idx]
+						: m_backBuffer
+						;
+					fb.m_needPresent = false;
+				}
+				return;
+			}
+
 			int64_t start = bx::getHPCounter();
 
 			for (uint16_t ii = 0; ii < m_numWindows; ++ii)
@@ -4938,6 +4955,7 @@ VK_IMPORT_DEVICE
 		uint16_t m_numWindows;
 		FrameBufferHandle m_windows[BGFX_CONFIG_MAX_FRAME_BUFFERS];
 		int64_t m_presentElapsed;
+		uint32_t m_lastFrameNumDraw;
 
 		MemoryLruVK m_memoryLru;
 
@@ -10632,6 +10650,7 @@ retry:
 		}
 
 		m_presentElapsed = 0;
+		m_lastFrameNumDraw = _render->m_numRenderItems;
 
 		uniformScratchBuffer.end();
 

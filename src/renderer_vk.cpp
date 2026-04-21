@@ -16,6 +16,10 @@
 #	import <Metal/Metal.h>
 #endif // BX_PLATFORM_OSX
 
+#if BX_PLATFORM_ANDROID
+#	include <android/log.h>
+#endif // BX_PLATFORM_ANDROID
+
 namespace bgfx { namespace vk
 {
 	static char s_viewName[BGFX_CONFIG_MAX_VIEWS][BGFX_CONFIG_MAX_VIEW_NAME];
@@ -984,12 +988,47 @@ VK_IMPORT_DEVICE
 		}
 	}
 
+	// --- Vulkan perf counters (static, no header change needed) ---
+	static uint32_t s_perfDescriptorAllocCount   = 0;
+	static uint32_t s_perfDescriptorCacheHitCount = 0;
+	static uint32_t s_perfDescriptorCacheMissCount = 0;
+	static uint32_t s_perfDescriptorReclaimCount = 0;
+	static uint32_t s_perfDescriptorOverflowCount = 0;
+	static uint32_t s_perfPipelineLookupCount    = 0;
+	static uint32_t s_perfPipelineLookupHitCount = 0;
+	static uint32_t s_perfPipelineLookupMissCount = 0;
+	static uint32_t s_perfUniformCommitCount     = 0;
+	static uint64_t s_perfUniformScratchBytes    = 0;
+	static uint32_t s_perfUniformUploadCount     = 0;
+	static uint64_t s_perfUniformUploadBytes     = 0;
+	static uint32_t s_perfCmdBindPipelineCount   = 0;
+	static uint32_t s_perfCmdBindDescriptorSetCount = 0;
+	static uint32_t s_perfCmdBindVertexBuffersCount = 0;
+	static uint32_t s_perfCmdBindIndexBufferCount = 0;
+	static uint32_t s_perfCmdSetScissorCount     = 0;
+	static uint32_t s_perfCmdDrawCount           = 0;
+	static uint32_t s_perfCmdDrawIndexedCount    = 0;
+	static uint32_t s_perfBarrierCount           = 0;
+	static uint32_t s_perfLayoutTransitionCount  = 0;
+	static uint64_t s_perfFenceWaitUs            = 0;
+	static uint64_t s_perfAcquireWaitUs          = 0;
+	static uint32_t s_perfRenderPassCount        = 0;
+	static uint32_t s_perfFrameCount             = 0;
+	static uint64_t s_perfSubmitCpuUs            = 0;
+	static uint64_t s_perfFrameTotalUs           = 0;
+	static int64_t  s_perfLastFrameTime          = 0;
+	static uint64_t s_perfUploadUs               = 0;
+	static uint64_t s_perfDrawLoopUs             = 0;
+	static uint64_t s_perfKickUs                 = 0;
+	static uint64_t s_perfStatsUs                = 0;
+
 	void setMemoryBarrier(
 		  VkCommandBuffer _commandBuffer
 		, VkPipelineStageFlags _srcStages
 		, VkPipelineStageFlags _dstStages
 		)
 	{
+		++s_perfBarrierCount;
 		VkMemoryBarrier mb;
 		mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		mb.pNext = NULL;
@@ -1022,6 +1061,8 @@ VK_IMPORT_DEVICE
 		, uint32_t _layerCount = VK_REMAINING_ARRAY_LAYERS
 		)
 	{
+		++s_perfLayoutTransitionCount;
+
 		if (_newLayout == VK_IMAGE_LAYOUT_UNDEFINED
 		||  _newLayout == VK_IMAGE_LAYOUT_PREINITIALIZED)
 		{
@@ -1174,6 +1215,24 @@ VK_IMPORT_DEVICE
 
 	struct RendererContextVK : public RendererContextI
 	{
+		struct DescriptorCacheEntry
+		{
+			VkDescriptorSet set = VK_NULL_HANDLE;
+		};
+
+		struct DescriptorArenaVK
+		{
+			VkDescriptorPool pool = VK_NULL_HANDLE;
+			stl::unordered_map<uint64_t, DescriptorCacheEntry> cache;
+			bool dirty = false;
+			bool overflow = false;
+			bool overflowLogged = false;
+			uint32_t framesSinceReset = 0;
+			uint32_t allocCount = 0;
+			uint32_t hitCount = 0;
+			uint32_t missCount = 0;
+		};
+
 		RendererContextVK()
 			: m_allocatorCb(NULL)
 			, m_memoryLru()
@@ -2147,7 +2206,17 @@ VK_IMPORT_DEVICE
 
 				for (uint32_t ii = 0; ii < m_maxFrameLatency; ++ii)
 				{
-					result = vkCreateDescriptorPool(m_device, &dpci, m_allocatorCb, &m_descriptorPool[ii]);
+					DescriptorArenaVK& arena = m_descriptorArena[ii];
+					arena.cache.clear();
+					arena.dirty = false;
+					arena.overflow = false;
+					arena.overflowLogged = false;
+					arena.framesSinceReset = 0;
+					arena.allocCount = 0;
+					arena.hitCount = 0;
+					arena.missCount = 0;
+
+					result = vkCreateDescriptorPool(m_device, &dpci, m_allocatorCb, &arena.pool);
 
 					if (VK_SUCCESS != result)
 					{
@@ -2247,7 +2316,8 @@ VK_IMPORT_DEVICE
 				for (uint32_t ii = 0; ii < m_maxFrameLatency; ++ii)
 				{
 					m_scratchStagingBuffer[ii].destroy();
-					vkDestroy(m_descriptorPool[ii]);
+					m_descriptorArena[ii].cache.clear();
+					vkDestroy(m_descriptorArena[ii].pool);
 				}
 				vkDestroy(m_pipelineCache);
 				[[fallthrough]];
@@ -2348,7 +2418,8 @@ VK_IMPORT_DEVICE
 
 			for (uint32_t ii = 0; ii < m_maxFrameLatency; ++ii)
 			{
-				vkDestroy(m_descriptorPool[ii]);
+				m_descriptorArena[ii].cache.clear();
+				vkDestroy(m_descriptorArena[ii].pool);
 			}
 
 			if (NULL != m_externalDevice)
@@ -2478,6 +2549,7 @@ VK_IMPORT_DEVICE
 
 		void destroyShader(ShaderHandle _handle) override
 		{
+			invalidateDescriptorCaches();
 			m_shaders[_handle.idx].destroy();
 		}
 
@@ -2488,6 +2560,7 @@ VK_IMPORT_DEVICE
 
 		void destroyProgram(ProgramHandle _handle) override
 		{
+			invalidateDescriptorCaches();
 			m_program[_handle.idx].destroy();
 		}
 
@@ -2571,6 +2644,7 @@ VK_IMPORT_DEVICE
 		void destroyTexture(TextureHandle _handle) override
 		{
 			m_imageViewCache.invalidateWithParent(_handle.idx);
+			invalidateDescriptorCaches();
 			m_textures[_handle.idx].destroy();
 		}
 
@@ -2764,6 +2838,55 @@ VK_IMPORT_DEVICE
 			m_cmd.recycleMemory(_alloc);
 		}
 
+		DescriptorArenaVK& getCurrentDescriptorArena()
+		{
+			return m_descriptorArena[m_cmd.m_currentFrameInFlight];
+		}
+
+		uint32_t getDescriptorArenaSoftLimit(const DescriptorArenaVK& _arena) const
+		{
+			const uint32_t warmupLimit = bx::max<uint32_t>(BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME / 4, 256);
+			return _arena.framesSinceReset <= 1
+				? warmupLimit
+				: BGFX_CONFIG_RENDERER_VULKAN_MAX_DESCRIPTOR_SETS_PER_FRAME
+				;
+		}
+
+		void invalidateDescriptorCaches()
+		{
+			for (uint32_t ii = 0; ii < m_maxFrameLatency; ++ii)
+			{
+				m_descriptorArena[ii].dirty = true;
+			}
+		}
+
+		void invalidateDescriptorArena(uint32_t _slot)
+		{
+			DescriptorArenaVK& arena = m_descriptorArena[_slot];
+			arena.cache.clear();
+			arena.dirty = false;
+			arena.overflow = false;
+			arena.overflowLogged = false;
+			arena.framesSinceReset = 0;
+			arena.allocCount = 0;
+			arena.hitCount = 0;
+			arena.missCount = 0;
+		}
+
+		void reclaimDescriptorArena(uint32_t _slot)
+		{
+			DescriptorArenaVK& arena = m_descriptorArena[_slot];
+			if (!arena.dirty
+			&&  !arena.overflow)
+			{
+				return;
+			}
+
+			VK_CHECK(vkResetDescriptorPool(m_device, arena.pool, 0) );
+			++s_perfDescriptorReclaimCount;
+			invalidateDescriptorArena(_slot);
+		}
+
 		void submitBlit(BlitState& _bs, uint16_t _view);
 
 		void submitUniformCache(UniformCacheState& _ucs, uint16_t _view);
@@ -2792,6 +2915,7 @@ VK_IMPORT_DEVICE
 			rc.extent.width  = width;
 			rc.extent.height = height;
 			vkCmdSetScissor(m_commandBuffer, 0, 1, &rc);
+			++s_perfCmdSetScissorCount;
 
 			const uint64_t state = 0
 				| BGFX_STATE_WRITE_RGB
@@ -2809,6 +2933,7 @@ VK_IMPORT_DEVICE
 				, 0
 				);
 			vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
+			++s_perfCmdBindPipelineCount;
 
 			ProgramVK& program = m_program[_blitter.m_program.idx];
 			float proj[16];
@@ -2838,7 +2963,7 @@ VK_IMPORT_DEVICE
 			bind.m_bind[0].m_idx = _blitter.m_texture.idx;
 			bind.m_bind[0].m_samplerFlags = (uint32_t)(texture.m_flags & BGFX_SAMPLER_BITS_MASK);
 
-			const VkDescriptorSet descriptorSet = getDescriptorSet(program, bind, sbo.buffer, NULL);
+			const VkDescriptorSet descriptorSet = createDescriptorSet(program, bind, sbo.buffer, NULL, getCurrentDescriptorArena().pool);
 
 			vkCmdBindDescriptorSets(
 				  m_commandBuffer
@@ -2850,10 +2975,12 @@ VK_IMPORT_DEVICE
 				, 1
 				, sbo.offsets
 				);
+			++s_perfCmdBindDescriptorSetCount;
 
 			const VertexBufferVK& vb  = m_vertexBuffers[_blitter.m_vb->handle.idx];
 			const VkDeviceSize offset = 0;
 			vkCmdBindVertexBuffers(m_commandBuffer, 0, 1, &vb.m_buffer, &offset);
+			++s_perfCmdBindVertexBuffersCount;
 
 			const BufferVK& ib = m_indexBuffers[_blitter.m_ib->handle.idx];
 			vkCmdBindIndexBuffer(
@@ -2862,6 +2989,7 @@ VK_IMPORT_DEVICE
 				, 0
 				, VK_INDEX_TYPE_UINT16
 				);
+			++s_perfCmdBindIndexBufferCount;
 		}
 
 		void dbgTextRender(TextVideoMemBlitter& _blitter, uint32_t _numIndices) override
@@ -2887,7 +3015,9 @@ VK_IMPORT_DEVICE
 				rpbi.pClearValues    = NULL;
 
 				vkCmdBeginRenderPass(m_commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+				++s_perfRenderPassCount;
 				vkCmdDrawIndexed(m_commandBuffer, _numIndices, 1, 0, 0, 0);
+				++s_perfCmdDrawIndexedCount;
 				vkCmdEndRenderPass(m_commandBuffer);
 			}
 		}
@@ -2991,6 +3121,13 @@ VK_IMPORT_DEVICE
 					m_backBuffer.m_nwh = g_platformData.nwh;
 				}
 
+				// After updating nwh, check if surface was destroyed (nwh=NULL).
+				// Skip swapchain update to avoid SIGSEGV in vkCreateAndroidSurfaceKHR.
+				if (NULL == m_backBuffer.m_nwh)
+				{
+					return suspended;
+				}
+
 				m_resolution = _resolution;
 				m_resolution.reset = flags;
 
@@ -3029,6 +3166,7 @@ VK_IMPORT_DEVICE
 
 		void setShaderUniform(uint8_t _flags, uint32_t _regIndex, const void* _val, uint32_t _numRegs)
 		{
+			s_perfUniformScratchBytes += uint64_t(_numRegs) * 16;
 			if (_flags & kUniformFragmentBit)
 			{
 				bx::memCopy(&m_fsScratch[_regIndex], _val, _numRegs*16);
@@ -3742,6 +3880,7 @@ VK_IMPORT_DEVICE
 
 		VkPipeline getPipeline(ProgramHandle _program)
 		{
+			++s_perfPipelineLookupCount;
 			ProgramVK& program = m_program[_program.idx];
 
 			bx::HashMurmur2A murmur;
@@ -3753,8 +3892,11 @@ VK_IMPORT_DEVICE
 
 			if (VK_NULL_HANDLE != pipeline)
 			{
+				++s_perfPipelineLookupHitCount;
 				return pipeline;
 			}
+
+			++s_perfPipelineLookupMissCount;
 
 			VkComputePipelineCreateInfo cpci;
 			cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -3782,6 +3924,7 @@ VK_IMPORT_DEVICE
 
 		VkPipeline getPipeline(uint64_t _state, uint64_t _stencil, uint8_t _numStreams, const VertexLayout** _layouts, ProgramHandle _program, uint8_t _numInstanceData)
 		{
+			++s_perfPipelineLookupCount;
 			ProgramVK& program = m_program[_program.idx];
 
 			_state &= 0
@@ -3846,8 +3989,11 @@ VK_IMPORT_DEVICE
 
 			if (VK_NULL_HANDLE != pipeline)
 			{
+				++s_perfPipelineLookupHitCount;
 				return pipeline;
 			}
+
+			++s_perfPipelineLookupMissCount;
 
 			VkPipelineColorBlendAttachmentState blendAttachmentState[BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS];
 			VkPipelineColorBlendStateCreateInfo colorBlendState;
@@ -4035,18 +4181,20 @@ VK_IMPORT_DEVICE
 			return pipeline;
 		}
 
-		VkDescriptorSet getDescriptorSet(const ProgramVK& _program, const RenderBind& _renderBind, VkBuffer _uniformBuffer, const float _palette[][4])
+		VkDescriptorSet createDescriptorSet(const ProgramVK& _program, const RenderBind& _renderBind, VkBuffer _uniformBuffer, const float _palette[][4], VkDescriptorPool _pool)
 		{
 			VkDescriptorSet descriptorSet;
 
 			VkDescriptorSetAllocateInfo dsai;
 			dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 			dsai.pNext              = NULL;
-			dsai.descriptorPool     = m_descriptorPool[m_cmd.m_currentFrameInFlight];
+			dsai.descriptorPool     = _pool;
 			dsai.descriptorSetCount = 1;
 			dsai.pSetLayouts        = &_program.m_descriptorSetLayout;
 
 			VK_CHECK(vkAllocateDescriptorSets(m_device, &dsai, &descriptorSet) );
+			++s_perfDescriptorAllocCount;
+			++getCurrentDescriptorArena().allocCount;
 
 			VkDescriptorImageInfo  imageInfo[BGFX_CONFIG_MAX_TEXTURE_SAMPLERS];
 			VkDescriptorBufferInfo bufferInfo[BGFX_CONFIG_MAX_TEXTURE_SAMPLERS];
@@ -4254,6 +4402,55 @@ VK_IMPORT_DEVICE
 			return descriptorSet;
 		}
 
+		VkDescriptorSet getCachedDescriptorSet(uint64_t _key, const ProgramVK& _program, const RenderBind& _renderBind, VkBuffer _uniformBuffer, const float _palette[][4])
+		{
+			DescriptorArenaVK& arena = getCurrentDescriptorArena();
+
+			auto it = arena.cache.find(_key);
+			if (it != arena.cache.end() )
+			{
+				++arena.hitCount;
+				++s_perfDescriptorCacheHitCount;
+				return it->second.set;
+			}
+
+			++arena.missCount;
+			++s_perfDescriptorCacheMissCount;
+
+			VkDescriptorSet descriptorSet = createDescriptorSet(_program, _renderBind, _uniformBuffer, _palette, arena.pool);
+			if (VK_NULL_HANDLE != descriptorSet)
+			{
+				const uint32_t softLimit = getDescriptorArenaSoftLimit(arena);
+				if (arena.overflow
+				||  arena.cache.size() >= softLimit)
+				{
+					if (!arena.overflow)
+					{
+						++s_perfDescriptorOverflowCount;
+					}
+
+					arena.overflow = true;
+
+					if (!arena.overflowLogged)
+					{
+						arena.overflowLogged = true;
+						BX_TRACE("Descriptor arena overflow slot=%u age=%u limit=%u size=%u"
+							, m_cmd.m_currentFrameInFlight
+							, arena.framesSinceReset
+							, softLimit
+							, uint32_t(arena.cache.size() )
+							);
+					}
+				}
+				else
+				{
+					arena.cache[_key] = { descriptorSet };
+				}
+			}
+
+			return descriptorSet;
+		}
+
 		bool isSwapChainReadable(const SwapChainVK& _swapChain)
 		{
 			return true
@@ -4323,6 +4520,7 @@ VK_IMPORT_DEVICE
 
 		void commit(UniformBuffer& _uniformBuffer)
 		{
+			++s_perfUniformCommitCount;
 			_uniformBuffer.reset();
 
 			for (;;)
@@ -4754,7 +4952,7 @@ VK_IMPORT_DEVICE
 		VkDevice m_externalDevice;
 		uint32_t m_globalQueueFamily;
 		VkQueue  m_globalQueue;
-		VkDescriptorPool m_descriptorPool[BGFX_CONFIG_MAX_FRAME_LATENCY];
+		DescriptorArenaVK m_descriptorArena[BGFX_CONFIG_MAX_FRAME_LATENCY];
 		VkPipelineCache  m_pipelineCache;
 
 		TimerQueryVK m_gpuTimer;
@@ -5249,6 +5447,9 @@ VK_DESTROY
 		const uint32_t fsSize = bx::strideAlign(_fsSize, m_align);
 		const uint32_t size   = vsSize + fsSize;
 
+		++s_perfUniformUploadCount;
+		s_perfUniformUploadBytes += size;
+
 		const ChunkedScratchBufferAlloc sba = alloc(size);
 
 		const uint32_t offset0 = sba.offset;
@@ -5594,7 +5795,11 @@ retry:
 						const uint16_t stage = regIndex - reverseShift; // regIndex is used for image/sampler binding index
 
 						const UniformRegInfo* info = s_renderVK->m_uniformReg.find(name);
-						BX_ASSERT(NULL != info, "User defined uniform '%s' is not found, it won't be set.", name);
+						if (NULL == info)
+						{
+							BX_WARN(false, "User defined sampler uniform '%s' is not found.", name);
+							continue;
+						}
 
 						m_bindInfo[stage].uniformHandle    = info->m_handle;
 						m_bindInfo[stage].type             = BindType::Sampler;
@@ -7519,6 +7724,12 @@ retry:
 		}
 #elif BX_PLATFORM_ANDROID
 		{
+			if (NULL == m_nwh)
+			{
+				BX_TRACE("createSurface: ANativeWindow is NULL (surface destroyed), returning surface lost.");
+				return VK_ERROR_SURFACE_LOST_KHR;
+			}
+
 			if (NULL != vkCreateAndroidSurfaceKHR)
 			{
 				VkAndroidSurfaceCreateInfoKHR sci;
@@ -7804,7 +8015,7 @@ retry:
 		m_sci.imageUsage         = imageUsage;
 		m_sci.compositeAlpha     = compositeAlpha;
 		m_sci.presentMode        = s_presentMode[presentModeIdx].mode;
-		m_sci.clipped            = VK_FALSE;
+		m_sci.clipped            = VK_TRUE;
 
 		result = vkCreateSwapchainKHR(device, &m_sci, allocatorCb, &m_swapChain);
 		if (VK_SUCCESS != result)
@@ -8235,6 +8446,7 @@ retry:
 			{
 				BGFX_PROFILER_SCOPE("vkAcquireNextImageKHR", kColorFrame);
 
+				int64_t t0 = bx::getHPCounter();
 				result = vkAcquireNextImageKHR(
 					  device
 					, m_swapChain
@@ -8243,6 +8455,8 @@ retry:
 					, VK_NULL_HANDLE
 					, &m_backBufferColorIdx
 					);
+				int64_t t1 = bx::getHPCounter();
+				s_perfAcquireWaitUs += uint64_t((t1 - t0) * 1000000.0 / bx::getHPFrequency());
 			}
 
 
@@ -8262,9 +8476,16 @@ retry:
 				return false;
 
 			case VK_ERROR_OUT_OF_DATE_KHR:
-			case VK_SUBOPTIMAL_KHR:
 				m_needToRecreateSwapchain = true;
 				return false;
+
+			case VK_SUBOPTIMAL_KHR:
+				// Suboptimal is not an error — the swapchain still works.
+				// On Android, Mali/Adreno drivers return this every frame when
+				// preTransform != currentTransform (IDENTITY vs device rotation).
+				// Recreating the swapchain doesn't help (same result next frame),
+				// and costs ~40ms/frame. Treat as success instead.
+				break;
 
 			default:
 				BX_ASSERT(VK_SUCCESS == result, "vkAcquireNextImageKHR(...); VK error 0x%x: %s", result, getName(result) );
@@ -8275,6 +8496,7 @@ retry:
 			{
 				BGFX_PROFILER_SCOPE("vkWaitForFences", kColorWait);
 
+				int64_t t0 = bx::getHPCounter();
 				VK_CHECK(vkWaitForFences(
 					  device
 					, 1
@@ -8282,6 +8504,8 @@ retry:
 					, VK_TRUE
 					, UINT64_MAX
 					) );
+				int64_t t1 = bx::getHPCounter();
+				s_perfAcquireWaitUs += uint64_t((t1 - t0) * 1000000.0 / bx::getHPFrequency());
 			}
 
 			transitionImage(_commandBuffer);
@@ -8328,8 +8552,11 @@ retry:
 				break;
 
 			case VK_ERROR_OUT_OF_DATE_KHR:
-			case VK_SUBOPTIMAL_KHR:
 				m_needToRecreateSwapchain = true;
+				break;
+
+			case VK_SUBOPTIMAL_KHR:
+				// Treat as success — see comment in acquire().
 				break;
 
 			default:
@@ -8739,7 +8966,10 @@ retry:
 			{
 				BGFX_PROFILER_SCOPE("vkWaitForFences", kColorWait);
 
+				int64_t t0 = bx::getHPCounter();
 				result = vkWaitForFences(device, 1, &commandList.m_fence, VK_TRUE, UINT64_MAX);
+				int64_t t1 = bx::getHPCounter();
+				s_perfFenceWaitUs += uint64_t((t1 - t0) * 1000000.0 / bx::getHPFrequency());
 			}
 
 			if (VK_SUCCESS != result)
@@ -8747,6 +8977,8 @@ retry:
 				BX_TRACE("Allocate command buffer error: vkWaitForFences failed %d: %s.", result, getName(result) );
 				return result;
 			}
+
+			s_renderVK->reclaimDescriptorArena(m_currentFrameInFlight);
 
 			result = vkResetCommandPool(device, commandList.m_commandPool, 0);
 
@@ -8814,16 +9046,21 @@ retry:
 		{
 			const VkDevice device = s_renderVK->m_device;
 
-			for (TextureHandle th : m_external)
+			if (!m_external.empty())
 			{
-				s_renderVK->m_textures[th.idx].setState(m_activeCommandBuffer, VK_IMAGE_LAYOUT_GENERAL);
-			}
+				for (TextureHandle th : m_external)
+				{
+					s_renderVK->m_textures[th.idx].setState(m_activeCommandBuffer, VK_IMAGE_LAYOUT_GENERAL);
+				}
 
-			setMemoryBarrier(
-				  m_activeCommandBuffer
-				, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
-				, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
-				);
+				// Narrowed barrier: only needed for external texture layout transitions.
+				// Without external textures, VkSubmitInfo semaphores handle synchronization.
+				setMemoryBarrier(
+					  m_activeCommandBuffer
+					, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+					, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT
+					);
+			}
 
 			VK_CHECK(vkEndCommandBuffer(m_activeCommandBuffer) );
 
@@ -9092,10 +9329,25 @@ retry:
 
 	void RendererContextVK::submit(Frame* _render, const ClearQuad& /*_clearQuad*/, const MipGen& /*_mipGen*/, TextVideoMemBlitter& _textVideoMemBlitter)
 	{
+		int64_t submitStart = bx::getHPCounter();
+
+		{
+			int64_t now = submitStart;
+			if (s_perfLastFrameTime != 0)
+			{
+				s_perfFrameTotalUs += uint64_t((now - s_perfLastFrameTime) * 1000000.0 / bx::getHPFrequency());
+			}
+			s_perfLastFrameTime = now;
+		}
+
+		BX_UNUSED(_clearQuad);
+
+		int64_t preA = bx::getHPCounter();
 		if (updateResolution(_render->m_resolution) )
 		{
 			return;
 		}
+		int64_t preB = bx::getHPCounter();
 
 		if (_render->m_capture)
 		{
@@ -9114,23 +9366,32 @@ retry:
 			frameQueryIdx = m_gpuTimer.begin(BGFX_CONFIG_MAX_VIEWS, _render->m_frameNum);
 		}
 
-		if (0 < _render->m_iboffset)
 		{
-			BGFX_PROFILER_SCOPE("bgfx/Update transient index buffer", kColorResource);
+			int64_t uploadT0 = bx::getHPCounter();
 
-			TransientIndexBuffer* ib = _render->m_transientIb;
-			m_indexBuffers[ib->handle.idx].update(m_commandBuffer, 0, _render->m_iboffset, ib->data);
+			if (0 < _render->m_iboffset)
+			{
+				BGFX_PROFILER_SCOPE("bgfx/Update transient index buffer", kColorResource);
+
+				TransientIndexBuffer* ib = _render->m_transientIb;
+				m_indexBuffers[ib->handle.idx].update(m_commandBuffer, 0, _render->m_iboffset, ib->data);
+			}
+
+			if (0 < _render->m_vboffset)
+			{
+				BGFX_PROFILER_SCOPE("bgfx/Update transient vertex buffer", kColorResource);
+
+				TransientVertexBuffer* vb = _render->m_transientVb;
+				m_vertexBuffers[vb->handle.idx].update(m_commandBuffer, 0, _render->m_vboffset, vb->data);
+			}
+
+			int64_t uploadT1 = bx::getHPCounter();
+			s_perfUploadUs += uint64_t((uploadT1 - uploadT0) * 1000000.0 / bx::getHPFrequency());
 		}
 
-		if (0 < _render->m_vboffset)
-		{
-			BGFX_PROFILER_SCOPE("bgfx/Update transient vertex buffer", kColorResource);
-
-			TransientVertexBuffer* vb = _render->m_transientVb;
-			m_vertexBuffers[vb->handle.idx].update(m_commandBuffer, 0, _render->m_vboffset, vb->data);
-		}
-
+		int64_t preC = bx::getHPCounter();
 		_render->sort();
+		int64_t preD = bx::getHPCounter();
 
 		RenderDraw currentState;
 		currentState.clear();
@@ -9178,8 +9439,11 @@ retry:
 		const uint64_t f2 = BGFX_STATE_BLEND_FACTOR<<4;
 		const uint64_t f3 = BGFX_STATE_BLEND_INV_FACTOR<<4;
 
-		VkDescriptorPool& descriptorPool = m_descriptorPool[m_cmd.m_currentFrameInFlight];
-		vkResetDescriptorPool(m_device, descriptorPool, 0);
+		DescriptorArenaVK& currentDescriptorArena = getCurrentDescriptorArena();
+		if (UINT32_MAX != currentDescriptorArena.framesSinceReset)
+		{
+			++currentDescriptorArena.framesSinceReset;
+		}
 
 		ChunkedScratchBufferVK& uniformScratchBuffer = m_uniformScratchBuffer;
 		uniformScratchBuffer.begin();
@@ -9208,6 +9472,18 @@ retry:
 			);
 
 		m_occlusionQuery.flush(_render);
+
+		static uint64_t s_perfPreLoopUs = 0;
+		static uint64_t s_perfUpdateResUs = 0;
+		static uint64_t s_perfSortUs = 0;
+		{
+			int64_t preLoopEnd = bx::getHPCounter();
+			double freq = (double)bx::getHPFrequency();
+			s_perfPreLoopUs += uint64_t((preLoopEnd - submitStart) * 1000000.0 / freq);
+			s_perfUpdateResUs += uint64_t((preB - preA) * 1000000.0 / freq);
+			s_perfSortUs += uint64_t((preD - preC) * 1000000.0 / freq);
+		}
+		int64_t drawLoopT0 = bx::getHPCounter();
 
 		if (0 == (_render->m_debug&BGFX_DEBUG_IFH) )
 		{
@@ -9341,6 +9617,7 @@ retry:
 						rc.extent.width  = viewScissorRect.m_width;
 						rc.extent.height = viewScissorRect.m_height;
 						vkCmdSetScissor(m_commandBuffer, 0, 1, &rc);
+						++s_perfCmdSetScissorCount;
 
 						if (!beginRenderPass)
 						{
@@ -9434,6 +9711,7 @@ retry:
 							rpbi.pClearValues = clearValues;
 
 							vkCmdBeginRenderPass(m_commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+							++s_perfRenderPassCount;
 							beginRenderPass = true;
 						}
 						else
@@ -9499,6 +9777,7 @@ retry:
 					{
 						currentPipeline = pipeline;
 						vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+						++s_perfCmdBindPipelineCount;
 					}
 
 					bool constantsChanged = false;
@@ -9560,8 +9839,9 @@ retry:
 						{
 							currentBindHash = bindHash;
 
-							currentDescriptorSet = getDescriptorSet(
-								  program
+							currentDescriptorSet = getCachedDescriptorSet(
+								  bindHash
+								, program
 								, renderBind
 								, sbo.buffer
 								, _render->m_colorPalette
@@ -9580,6 +9860,7 @@ retry:
 							, numOffsets
 							, sbo.offsets
 							);
+						++s_perfCmdBindDescriptorSetCount;
 					}
 
 					if (isValid(compute.m_indirectBuffer) )
@@ -9696,6 +9977,7 @@ retry:
 								, &streamBuffers[0]
 								, streamOffsets
 								);
+							++s_perfCmdBindVertexBuffersCount;
 						}
 					}
 
@@ -9712,6 +9994,7 @@ retry:
 					{
 						currentPipeline = pipeline;
 						vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+						++s_perfCmdBindPipelineCount;
 					}
 
 					const bool hasStencil = 0 != draw.m_stencil;
@@ -9764,6 +10047,7 @@ retry:
 								rc.extent.width  = viewScissorRect.m_width;
 								rc.extent.height = viewScissorRect.m_height;
 								vkCmdSetScissor(m_commandBuffer, 0, 1, &rc);
+								++s_perfCmdSetScissorCount;
 							}
 						}
 						else
@@ -9778,6 +10062,7 @@ retry:
 							rc.extent.width  = scissorRect.m_width;
 							rc.extent.height = scissorRect.m_height;
 							vkCmdSetScissor(m_commandBuffer, 0, 1, &rc);
+							++s_perfCmdSetScissorCount;
 						}
 					}
 
@@ -9847,8 +10132,9 @@ retry:
 						{
 							currentBindHash = bindHash;
 
-							currentDescriptorSet = getDescriptorSet(
-								  program
+							currentDescriptorSet = getCachedDescriptorSet(
+								  bindHash
+								, program
 								, renderBind
 								, sbo.buffer
 								, _render->m_colorPalette
@@ -9867,6 +10153,7 @@ retry:
 							, numOffsets
 							, sbo.offsets
 							);
+						++s_perfCmdBindDescriptorSetCount;
 					}
 
 					VkBuffer bufferIndirect = VK_NULL_HANDLE;
@@ -9940,6 +10227,7 @@ retry:
 								, 0
 								, 0
 								);
+							++s_perfCmdDrawCount;
 						}
 					}
 					else
@@ -9968,6 +10256,7 @@ retry:
 								, 0
 								, indexFormat
 								);
+							++s_perfCmdBindIndexBufferCount;
 						}
 
 						if (isValid(draw.m_indirectBuffer) )
@@ -10005,6 +10294,7 @@ retry:
 								, 0
 								, 0
 								);
+							++s_perfCmdDrawIndexedCount;
 						}
 					}
 
@@ -10047,7 +10337,14 @@ retry:
 			}
 		}
 
+		{
+			int64_t drawLoopT1 = bx::getHPCounter();
+			s_perfDrawLoopUs += uint64_t((drawLoopT1 - drawLoopT0) * 1000000.0 / bx::getHPFrequency());
+		}
+
 		BGFX_VK_PROFILER_END();
+
+		int64_t statsT0 = bx::getHPCounter();
 
 		int64_t timeEnd = bx::getHPCounter();
 		int64_t frameTime = timeEnd - timeBegin;
@@ -10126,6 +10423,13 @@ retry:
 		bx::memCopy(perfStats.numPrims, statsNumPrimsRendered, sizeof(perfStats.numPrims) );
 		perfStats.gpuMemoryMax  = gpuMemoryAvailable;
 		perfStats.gpuMemoryUsed = gpuMemoryUsed;
+
+		uint32_t descriptorCacheEntries = 0;
+		for (uint32_t ii = 0; ii < m_maxFrameLatency; ++ii)
+		{
+			descriptorCacheEntries += uint32_t(m_descriptorArena[ii].cache.size() );
+		}
+		const uint32_t currentDescriptorSoftLimit = getDescriptorArenaSoftLimit(currentDescriptorArena);
 
 		if (_render->m_debug & (BGFX_DEBUG_IFH|BGFX_DEBUG_STATS) )
 		{
@@ -10238,11 +10542,41 @@ retry:
 
 				pos++;
 				tvm.printf(10, pos++, 0x8b, " State cache:             ");
-				tvm.printf(10, pos++, 0x8b, " PSO    | DSL    |  DS    ");
-				tvm.printf(10, pos++, 0x8b, " %6d | %6d | %6d "
+				tvm.printf(10, pos++, 0x8b, " PSO    | DSL    |  DS    | DSCache");
+				tvm.printf(10, pos++, 0x8b, " %6d | %6d | %6d | %7d"
 					, m_pipelineStateCache.getCount()
 					, m_descriptorSetLayoutCache.getCount()
 					, descriptorSetCount
+					, descriptorCacheEntries
+					);
+				tvm.printf(10, pos++, 0x8b, " DS perf : alloc %6u | hit %6u | miss %6u | reclaim %4u | over %4u"
+					, s_perfDescriptorAllocCount
+					, s_perfDescriptorCacheHitCount
+					, s_perfDescriptorCacheMissCount
+					, s_perfDescriptorReclaimCount
+					, s_perfDescriptorOverflowCount
+					);
+				tvm.printf(10, pos++, 0x8b, " DS guard: slot %2u | age %3u | limit %6u | overflow %c"
+					, m_cmd.m_currentFrameInFlight
+					, currentDescriptorArena.framesSinceReset
+					, currentDescriptorSoftLimit
+					, currentDescriptorArena.overflow ? '\xfe' : ' '
+					);
+				tvm.printf(10, pos++, 0x8b, " PSO perf: lookup %6u | hit %6u | miss %6u"
+					, s_perfPipelineLookupCount
+					, s_perfPipelineLookupHitCount
+					, s_perfPipelineLookupMissCount
+					);
+				tvm.printf(10, pos++, 0x8b, " Bind cmd: pipe %6u | desc %6u | vtx %6u | idx %6u"
+					, s_perfCmdBindPipelineCount
+					, s_perfCmdBindDescriptorSetCount
+					, s_perfCmdBindVertexBuffersCount
+					, s_perfCmdBindIndexBufferCount
+					);
+				tvm.printf(10, pos++, 0x8b, " Draw cmd: draw %6u | drawIdx %6u | scissor %6u"
+					, s_perfCmdDrawCount
+					, s_perfCmdDrawIndexedCount
+					, s_perfCmdSetScissorCount
 					);
 				pos++;
 
@@ -10253,7 +10587,19 @@ retry:
 					char strTotal[64];
 					bx::prettify(strTotal, sizeof(strTotal), m_uniformScratchBuffer.m_chunkControl.m_size);
 
+					char strScratchBytes[64];
+					bx::prettify(strScratchBytes, sizeof(strScratchBytes), s_perfUniformScratchBytes);
+
+					char strUploadBytes[64];
+					bx::prettify(strUploadBytes, sizeof(strUploadBytes), s_perfUniformUploadBytes);
+
 					tvm.printf(10, pos++, 0x8b, "Uniform scratch size: %s / %s.", strUsed, strTotal);
+					tvm.printf(10, pos++, 0x8b, "Uniform perf: commit %6u | scratch %8s | upload %6u / %8s"
+						, s_perfUniformCommitCount
+						, strScratchBytes
+						, s_perfUniformUploadCount
+						, strUploadBytes
+						);
 				}
 
 				pos++;
@@ -10314,7 +10660,128 @@ retry:
 			}
 		}
 
-		kick();
+		// --- Vulkan perf counter report (every 60 frames) ---
+		++s_perfFrameCount;
+		if (s_perfFrameCount % 60 == 0)
+		{
+#if BX_PLATFORM_ANDROID
+			__android_log_print(ANDROID_LOG_INFO, "bgfx", "PERF[%u]: descriptors=%u hit=%u miss=%u reclaim=%u overflow=%u entries=%u pso=%u/%u/%u uniformCommit=%u uniformUpload=%u/%llu cmd(pipe=%u desc=%u vtx=%u idx=%u scissor=%u draw=%u drawIdx=%u) barriers=%u transitions=%u fenceWait=%lluus acquireWait=%lluus renderPass=%u"
+				, s_perfFrameCount
+				, s_perfDescriptorAllocCount
+				, s_perfDescriptorCacheHitCount
+				, s_perfDescriptorCacheMissCount
+				, s_perfDescriptorReclaimCount
+				, s_perfDescriptorOverflowCount
+				, descriptorCacheEntries
+				, s_perfPipelineLookupCount
+				, s_perfPipelineLookupHitCount
+				, s_perfPipelineLookupMissCount
+				, s_perfUniformCommitCount
+				, s_perfUniformUploadCount
+				, (unsigned long long)s_perfUniformUploadBytes
+				, s_perfCmdBindPipelineCount
+				, s_perfCmdBindDescriptorSetCount
+				, s_perfCmdBindVertexBuffersCount
+				, s_perfCmdBindIndexBufferCount
+				, s_perfCmdSetScissorCount
+				, s_perfCmdDrawCount
+				, s_perfCmdDrawIndexedCount
+				, s_perfBarrierCount
+				, s_perfLayoutTransitionCount
+				, (unsigned long long)s_perfFenceWaitUs
+				, (unsigned long long)s_perfAcquireWaitUs
+				, s_perfRenderPassCount
+			);
+			__android_log_print(ANDROID_LOG_INFO, "bgfx", "SYNC[%u]: cpu=%llu tot=%llu pre=%llu(res=%llu sort=%llu) draw=%llu kick=%llu"
+				, s_perfFrameCount
+				, (unsigned long long)s_perfSubmitCpuUs
+				, (unsigned long long)s_perfFrameTotalUs
+				, (unsigned long long)s_perfPreLoopUs
+				, (unsigned long long)s_perfUpdateResUs
+				, (unsigned long long)s_perfSortUs
+				, (unsigned long long)s_perfDrawLoopUs
+				, (unsigned long long)s_perfKickUs
+			);
+			s_perfStatsUs = 0;
+#else
+			BX_TRACE("PERF[%u]: descriptors=%u hit=%u miss=%u reclaim=%u overflow=%u entries=%u pso=%u/%u/%u uniformCommit=%u uniformUpload=%u/%llu cmd(pipe=%u desc=%u vtx=%u idx=%u scissor=%u draw=%u drawIdx=%u) barriers=%u transitions=%u fenceWait=%lluus acquireWait=%lluus renderPass=%u submitCpu=%lluus frameTot=%lluus"
+				, s_perfFrameCount
+				, s_perfDescriptorAllocCount
+				, s_perfDescriptorCacheHitCount
+				, s_perfDescriptorCacheMissCount
+				, s_perfDescriptorReclaimCount
+				, s_perfDescriptorOverflowCount
+				, descriptorCacheEntries
+				, s_perfPipelineLookupCount
+				, s_perfPipelineLookupHitCount
+				, s_perfPipelineLookupMissCount
+				, s_perfUniformCommitCount
+				, s_perfUniformUploadCount
+				, (unsigned long long)s_perfUniformUploadBytes
+				, s_perfCmdBindPipelineCount
+				, s_perfCmdBindDescriptorSetCount
+				, s_perfCmdBindVertexBuffersCount
+				, s_perfCmdBindIndexBufferCount
+				, s_perfCmdSetScissorCount
+				, s_perfCmdDrawCount
+				, s_perfCmdDrawIndexedCount
+				, s_perfBarrierCount
+				, s_perfLayoutTransitionCount
+				, (unsigned long long)s_perfFenceWaitUs
+				, (unsigned long long)s_perfAcquireWaitUs
+				, s_perfRenderPassCount
+				, (unsigned long long)s_perfSubmitCpuUs
+				, (unsigned long long)s_perfFrameTotalUs
+			);
+#endif
+			s_perfDescriptorAllocCount  = 0;
+			s_perfDescriptorCacheHitCount = 0;
+			s_perfDescriptorCacheMissCount = 0;
+			s_perfDescriptorReclaimCount = 0;
+			s_perfDescriptorOverflowCount = 0;
+			s_perfPipelineLookupCount = 0;
+			s_perfPipelineLookupHitCount = 0;
+			s_perfPipelineLookupMissCount = 0;
+			s_perfUniformCommitCount = 0;
+			s_perfUniformScratchBytes = 0;
+			s_perfUniformUploadCount = 0;
+			s_perfUniformUploadBytes = 0;
+			s_perfCmdBindPipelineCount = 0;
+			s_perfCmdBindDescriptorSetCount = 0;
+			s_perfCmdBindVertexBuffersCount = 0;
+			s_perfCmdBindIndexBufferCount = 0;
+			s_perfCmdSetScissorCount = 0;
+			s_perfCmdDrawCount = 0;
+			s_perfCmdDrawIndexedCount = 0;
+			s_perfBarrierCount          = 0;
+			s_perfLayoutTransitionCount = 0;
+			s_perfFenceWaitUs           = 0;
+			s_perfAcquireWaitUs         = 0;
+			s_perfRenderPassCount       = 0;
+			s_perfSubmitCpuUs           = 0;
+			s_perfFrameTotalUs          = 0;
+			s_perfUploadUs              = 0;
+			s_perfDrawLoopUs            = 0;
+			s_perfPreLoopUs             = 0;
+			s_perfUpdateResUs           = 0;
+			s_perfSortUs                = 0;
+			s_perfKickUs                = 0;
+		}
+
+		int64_t statsT1 = bx::getHPCounter();
+		s_perfStatsUs += uint64_t((statsT1 - statsT0) * 1000000.0 / bx::getHPFrequency());
+
+		{
+			int64_t kickT0 = bx::getHPCounter();
+			kick();
+			int64_t kickT1 = bx::getHPCounter();
+			s_perfKickUs += uint64_t((kickT1 - kickT0) * 1000000.0 / bx::getHPFrequency());
+		}
+
+		{
+			int64_t submitEnd = bx::getHPCounter();
+			s_perfSubmitCpuUs += uint64_t((submitEnd - submitStart) * 1000000.0 / bx::getHPFrequency());
+		}
 	}
 
 } /* namespace vk */ } // namespace bgfx

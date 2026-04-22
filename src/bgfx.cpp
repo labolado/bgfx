@@ -6,6 +6,7 @@
 #include <bx/platform.h>
 
 #include "bgfx_p.h"
+#include <atomic>
 #include <bgfx/embedded_shader.h>
 #include <bx/file.h>
 #include <bx/mutex.h>
@@ -465,7 +466,7 @@ namespace bgfx
 	}
 
 	// Static globals — NOT in any struct to avoid layout changes
-	static uintptr_t s_skipPresent = 0; // atomic-compatible type, 0=false 1=true
+	static std::atomic<uint32_t> s_skipPresent{0};
 
 	uintptr_t getInternalTexturePtr(TextureHandle _handle)
 	{
@@ -477,12 +478,12 @@ namespace bgfx
 
 	void setSkipPresent(bool _skip)
 	{
-		__atomic_store_n(&s_skipPresent, _skip ? (uintptr_t)1 : (uintptr_t)0, __ATOMIC_RELEASE);
+		s_skipPresent.store(_skip ? 1u : 0u, std::memory_order_release);
 	}
 
 	bool getSkipPresentState()
 	{
-		return __atomic_load_n(&s_skipPresent, __ATOMIC_ACQUIRE) != 0;
+		return s_skipPresent.load(std::memory_order_acquire) != 0;
 	}
 
 	uintptr_t overrideInternal(TextureHandle _handle, uintptr_t _ptr, uint16_t _layerIndex)
@@ -2159,7 +2160,7 @@ namespace bgfx
 		m_exit    = false;
 		m_flipped = true;
 		m_debug   = BGFX_DEBUG_NONE;
-		__atomic_store_n(&s_skipPresent, (uintptr_t)0, __ATOMIC_RELEASE);
+		s_skipPresent.store(0u, std::memory_order_release);
 		m_frameTimeLast = bx::getHPCounter();
 		m_flipAfterRender = !!(m_init.resolution.reset & BGFX_RESET_FLIP_AFTER_RENDER);
 

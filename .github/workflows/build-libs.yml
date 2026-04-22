@@ -124,6 +124,13 @@ jobs:
             fi
           done
           lipo -info bgfx/.build/projects/xcode15/libbgfxRelease.a
+          # Strip DWARF debug info from Debug libs to reduce archive size (~967MB → ~50MB)
+          # Keeps symbol table (strip -S), removes debug sections only
+          for lib in bgfx/.build/projects/xcode15/*.a; do
+            strip -S "$lib"
+          done
+          echo "Stripped .a sizes:"
+          ls -lh bgfx/.build/projects/xcode15/
 
       - name: Build bgfx Android arm64 (Release)
         if: steps.check.outputs.exists == 'false'
@@ -162,3 +169,4 @@ jobs:
             release-assets/bgfx-android.tar.gz \
             release-assets/bgfx-tools.tar.gz
           echo "Created release: $TAG"
+

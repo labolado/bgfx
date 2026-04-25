@@ -9356,7 +9356,7 @@ retry:
 		}
 	}
 
-	void RendererContextVK::submit(Frame* _render, const ClearQuad& /*_clearQuad*/, const MipGen& /*_mipGen*/, TextVideoMemBlitter& _textVideoMemBlitter)
+	void RendererContextVK::submit(Frame* _render, const ClearQuad& _clearQuad, const MipGen& /*_mipGen*/, TextVideoMemBlitter& _textVideoMemBlitter)
 	{
 		int64_t submitStart = bx::getHPCounter();
 

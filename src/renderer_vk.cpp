@@ -8505,16 +8505,25 @@ retry:
 				return false;
 
 			case VK_ERROR_OUT_OF_DATE_KHR:
+#if !BX_PLATFORM_ANDROID
+			case VK_SUBOPTIMAL_KHR:
+				// Desktop drivers emit SUBOPTIMAL during window resize; the
+				// upstream behavior of recreating the swapchain produces the
+				// expected post-resize result.
+#endif // !BX_PLATFORM_ANDROID
 				m_needToRecreateSwapchain = true;
 				return false;
 
+#if BX_PLATFORM_ANDROID
 			case VK_SUBOPTIMAL_KHR:
-				// Suboptimal is not an error — the swapchain still works.
-				// On Android, Mali/Adreno drivers return this every frame when
-				// preTransform != currentTransform (IDENTITY vs device rotation).
-				// Recreating the swapchain doesn't help (same result next frame),
-				// and costs ~40ms/frame. Treat as success instead.
+				// On Android, Mali/Adreno drivers return SUBOPTIMAL_KHR every frame
+				// when preTransform != currentTransform (e.g. IDENTITY vs device
+				// rotation). The image is still valid to use; recreating the
+				// swapchain does not resolve the condition and costs ~40ms/frame.
+				// Treat as success — the next OUT_OF_DATE will still trigger
+				// proper recreation when truly needed.
 				break;
+#endif // BX_PLATFORM_ANDROID
 
 			default:
 				BX_ASSERT(VK_SUCCESS == result, "vkAcquireNextImageKHR(...); VK error 0x%x: %s", result, getName(result) );
@@ -8581,12 +8590,17 @@ retry:
 				break;
 
 			case VK_ERROR_OUT_OF_DATE_KHR:
+#if !BX_PLATFORM_ANDROID
+			case VK_SUBOPTIMAL_KHR:
+#endif // !BX_PLATFORM_ANDROID
 				m_needToRecreateSwapchain = true;
 				break;
 
+#if BX_PLATFORM_ANDROID
 			case VK_SUBOPTIMAL_KHR:
-				// Treat as success — see comment in acquire().
+				// Treat as success on Android — see comment in acquire().
 				break;
+#endif // BX_PLATFORM_ANDROID
 
 			default:
 				BX_ASSERT(VK_SUCCESS == result, "vkQueuePresentKHR(...); VK error 0x%x: %s", result, getName(result) );

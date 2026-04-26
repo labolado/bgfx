@@ -3846,7 +3846,6 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 			}
 
 			m_metalLayer->setDevice(s_renderMtl->m_device);
-			MtlObjAccess::send<void>(m_metalLayer, sel_registerName("setOpaque:"), true);
 			MtlObjAccess::send<void>(m_metalLayer, sel_registerName("setMagnificationFilter:"), nsstr("nearest") );
 
 			const Resolution& resolution = s_renderMtl->m_resolution;

@@ -45,6 +45,7 @@ projgen: ## Generate project files for all configurations.
 	$(GENIE) --with-tools --with-combined-examples --with-shared-lib --gcc=osx-x64         gmake
 	$(GENIE) --with-tools --with-combined-examples --with-shared-lib --xcode=osx           xcode9
 	$(GENIE) --with-tools --with-combined-examples --with-shared-lib --xcode=ios           xcode9
+	$(GENIE)              --with-combined-examples --with-shared-lib --gcc=android-arm     gmake
 	$(GENIE)              --with-combined-examples --with-shared-lib --gcc=android-arm64   gmake
 	$(GENIE)              --with-combined-examples                   --gcc=ios-arm64       gmake
 	$(GENIE)              --with-combined-examples                   --gcc=rpi             gmake
@@ -52,6 +53,14 @@ projgen: ## Generate project files for all configurations.
 idl: ## Generate code from IDL.
 	@echo Generating code from IDL.
 	cd scripts && ../$(GENIE) idl
+
+.build/projects/gmake-android-arm:
+	$(GENIE) --gcc=android-arm --with-combined-examples --with-shared-lib gmake
+android-arm-debug: .build/projects/gmake-android-arm ## Build - Android ARM Debug
+	$(MAKE) -R -C .build/projects/gmake-android-arm config=debug
+android-arm-release: .build/projects/gmake-android-arm ## Build - Android ARM Release
+	$(MAKE) -R -C .build/projects/gmake-android-arm config=release
+android-arm: android-arm-debug android-arm-release ## Build - Android ARM Debug and Release
 
 .build/projects/gmake-android-arm64:
 	$(GENIE) --gcc=android-arm64 --with-combined-examples --with-shared-lib gmake

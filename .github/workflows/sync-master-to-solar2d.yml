@@ -1,0 +1,56 @@
+name: Sync master to solar2d
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout solar2d
+        uses: actions/checkout@v4
+        with:
+          ref: solar2d
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name 'Labo Lado'
+          git config user.email 'laboladoapp@gmail.com'
+
+      - name: Fetch master
+        run: git fetch origin master
+
+      - name: Skip if already merged
+        id: check
+        run: |
+          if git merge-base --is-ancestor origin/master HEAD; then
+            echo 'solar2d already contains master HEAD, skipping'
+            echo 'skip=true' >> $GITHUB_OUTPUT
+          else
+            echo 'skip=false' >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge master into solar2d
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git merge --no-ff origin/master \
+            -m "Merge remote-tracking branch 'origin/master' into solar2d"
+
+      - name: Push solar2d
+        if: steps.check.outputs.skip == 'false'
+        run: git push origin solar2d
+
+      - name: Trigger Build bgfx libs for Solar2D
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 10  # wait for push to propagate
+          gh workflow run 'Build bgfx libs for Solar2D' --ref solar2d --repo ${{ github.repository }}

@@ -355,7 +355,7 @@ static_assert(BGFX_CONFIG_MAX_VERTEX_STREAMS < 32, "Must be less than 32!");
 
 /// Maximum number of frame buffer handles. Default is 128.
 #ifndef BGFX_CONFIG_MAX_FRAME_BUFFERS
-#	define BGFX_CONFIG_MAX_FRAME_BUFFERS 128
+#	define BGFX_CONFIG_MAX_FRAME_BUFFERS 512
 #endif // BGFX_CONFIG_MAX_FRAME_BUFFERS
 
 /// Maximum number of attachments (color + depth/stencil) per frame buffer.

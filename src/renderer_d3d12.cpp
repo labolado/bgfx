@@ -2811,10 +2811,16 @@ namespace bgfx { namespace d3d12
 				m_pipelineStateCache.invalidate();
 			}
 
+			if (_resolution.reset & BGFX_RESET_VSYNC)
+				m_resolution.reset |= BGFX_RESET_VSYNC;
+			else
+				m_resolution.reset &= ~BGFX_RESET_VSYNC;
+
 			const uint32_t maskFlags = ~(0
 				| BGFX_RESET_MAXANISOTROPY
 				| BGFX_RESET_DEPTH_CLAMP
 				| BGFX_RESET_SUSPEND
+				| BGFX_RESET_VSYNC
 				);
 
 			if (m_resolution.width              !=  _resolution.width
@@ -5751,6 +5757,15 @@ namespace bgfx { namespace d3d12
 			}
 			else
 			{
+				const uint32_t savedMipLevels = resourceDesc.MipLevels;
+				const D3D12_RESOURCE_FLAGS savedFlags = resourceDesc.Flags;
+
+				if (needResolve)
+				{
+					resourceDesc.MipLevels = 1;
+					resourceDesc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+				}
+
 				m_ptr = createCommittedResource(
 					  device
 					, HeapProperty::Texture
@@ -5761,6 +5776,12 @@ namespace bgfx { namespace d3d12
 						? D3D12_HEAP_FLAG_SHARED
 						: D3D12_HEAP_FLAG_NONE
 					);
+
+				if (needResolve)
+				{
+					resourceDesc.MipLevels = savedMipLevels;
+					resourceDesc.Flags     = savedFlags;
+				}
 
 				if (externalShared)
 				{

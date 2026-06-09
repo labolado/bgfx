@@ -9,7 +9,7 @@ import bindbc.common.types: c_int64, c_uint64, va_list;
 import bindbc.bgfx.config;
 static import bgfx.impl;
 
-enum uint apiVersion = 143;
+enum uint apiVersion = 145;
 
 alias ViewID = ushort;
 
@@ -1773,6 +1773,26 @@ extern(C++, "bgfx") struct Encoder{
 			{q{void}, q{setTexture}, q{ubyte stage, UniformHandle sampler, TextureHandle handle, uint flags=uint.max}, ext: `C++`},
 			
 			/**
+			Set texture stage for draw primitive, selecting a sub-range of the
+			texture's array layers and mip levels.
+			Params:
+				stage = Texture unit.
+				sampler = Program sampler.
+				handle = Texture handle.
+				firstLayer = First array layer.
+				numLayers = Number of array layers.
+				firstMIP = First (most detailed) mip level.
+				numMIPs = Number of mip levels.
+				flags = Texture sampling mode. Default value UINT32_MAX uses
+			  texture sampling settings from the texture.
+			  - `BGFX_SAMPLER_[U/V/W]_[MIRROR/CLAMP]` - Mirror or clamp to edge wrap
+			    mode.
+			  - `BGFX_SAMPLER_[MIN/MAG/MIP]_[POINT/ANISOTROPIC]` - Point or anisotropic
+			    sampling.
+			*/
+			{q{void}, q{setTexture}, q{ubyte stage, UniformHandle sampler, TextureHandle handle, ushort firstLayer, ushort numLayers, ubyte firstMIP, ubyte numMIPs, uint flags=uint.max}, ext: `C++`},
+			
+			/**
 			Submit an empty primitive for rendering. Uniforms and draw state
 			will be applied but no geometry will be submitted. Useful in cases
 			when no other draw/compute primitive is submitted to view, but it's
@@ -2805,14 +2825,17 @@ mixin(joinFnBinds((){
 		* Read back texture content.
 		* 
 		* Attention: Texture must be created with `BGFX_TEXTURE_READ_BACK` flag.
+		*            It's a texture for CPU readback, and can't be a GPU resource
+		*            at the same time. See `examples/30-picking`.
 		* Attention: Availability depends on: `BGFX_CAPS_TEXTURE_READ_BACK`.
 		* 
 		Params:
 			handle = Texture handle.
 			data = Destination buffer.
+			layer = Texture layer.
 			mip = Mip level.
 		*/
-		{q{uint}, q{readTexture}, q{TextureHandle handle, void* data, ubyte mip=0}, ext: `C++, "bgfx"`},
+		{q{uint}, q{readTexture}, q{TextureHandle handle, void* data, ushort layer=0, ubyte mip=0}, ext: `C++, "bgfx"`},
 		
 		/**
 		* Set texture debug name.
@@ -3723,6 +3746,26 @@ mixin(joinFnBinds((){
 		    sampling.
 		*/
 		{q{void}, q{setTexture}, q{ubyte stage, UniformHandle sampler, TextureHandle handle, uint flags=uint.max}, ext: `C++, "bgfx"`},
+		
+		/**
+		* Set texture stage for draw primitive, selecting a sub-range of the
+		* texture's array layers and mip levels.
+		Params:
+			stage = Texture unit.
+			sampler = Program sampler.
+			handle = Texture handle.
+			firstLayer = First array layer.
+			numLayers = Number of array layers.
+			firstMIP = First (most detailed) mip level.
+			numMIPs = Number of mip levels.
+			flags = Texture sampling mode. Default value UINT32_MAX uses
+		  texture sampling settings from the texture.
+		  - `BGFX_SAMPLER_[U/V/W]_[MIRROR/CLAMP]` - Mirror or clamp to edge wrap
+		    mode.
+		  - `BGFX_SAMPLER_[MIN/MAG/MIP]_[POINT/ANISOTROPIC]` - Point or anisotropic
+		    sampling.
+		*/
+		{q{void}, q{setTexture}, q{ubyte stage, UniformHandle sampler, TextureHandle handle, ushort firstLayer, ushort numLayers, ubyte firstMIP, ubyte numMIPs, uint flags=uint.max}, ext: `C++, "bgfx"`},
 		
 		/**
 		* Submit an empty primitive for rendering. Uniforms and draw state

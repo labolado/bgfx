@@ -609,6 +609,7 @@ namespace bgfx { namespace gl
 			ARB_texture_stencil8,
 			ARB_texture_storage,
 			ARB_texture_swizzle,
+			ARB_texture_view,
 			ARB_timer_query,
 			ARB_uniform_buffer_object,
 			ARB_vertex_array_object,
@@ -666,6 +667,7 @@ namespace bgfx { namespace gl
 			EXT_texture_sRGB,
 			EXT_texture_storage,
 			EXT_texture_swizzle,
+			EXT_texture_view,
 			EXT_texture_type_2_10_10_10_REV,
 			EXT_timer_query,
 			EXT_unpack_subimage,
@@ -720,6 +722,7 @@ namespace bgfx { namespace gl
 			OES_texture_half_float_linear,
 			OES_texture_stencil8,
 			OES_texture_storage_multisample_2d_array,
+			OES_texture_view,
 			OES_vertex_array_object,
 			OES_vertex_half_float,
 			OES_vertex_type_10_10_10_2,
@@ -827,6 +830,7 @@ namespace bgfx { namespace gl
 		{ "ARB_texture_stencil8",                     false,                             true  },
 		{ "ARB_texture_storage",                      BGFX_CONFIG_RENDERER_OPENGL >= 42, true  },
 		{ "ARB_texture_swizzle",                      BGFX_CONFIG_RENDERER_OPENGL >= 33, true  },
+		{ "ARB_texture_view",                         BGFX_CONFIG_RENDERER_OPENGL >= 43, true  },
 		{ "ARB_timer_query",                          BGFX_CONFIG_RENDERER_OPENGL >= 33, true  },
 		{ "ARB_uniform_buffer_object",                BGFX_CONFIG_RENDERER_OPENGL >= 31, true  },
 		{ "ARB_vertex_array_object",                  BGFX_CONFIG_RENDERER_OPENGL >= 30, true  },
@@ -884,6 +888,7 @@ namespace bgfx { namespace gl
 		{ "EXT_texture_sRGB",                         false,                             true  },
 		{ "EXT_texture_storage",                      false,                             true  },
 		{ "EXT_texture_swizzle",                      false,                             true  },
+		{ "EXT_texture_view",                         false,                             true  },
 		{ "EXT_texture_type_2_10_10_10_REV",          false,                             true  },
 		{ "EXT_timer_query",                          BGFX_CONFIG_RENDERER_OPENGL >= 33, true  },
 		{ "EXT_unpack_subimage",                      false,                             true  },
@@ -938,6 +943,7 @@ namespace bgfx { namespace gl
 		{ "OES_texture_half_float_linear",            false,                             true  },
 		{ "OES_texture_stencil8",                     false,                             true  },
 		{ "OES_texture_storage_multisample_2d_array", false,                             true  },
+		{ "OES_texture_view",                         false,                             true  },
 		{ "OES_vertex_array_object",                  false,                             true  },
 		{ "OES_vertex_half_float",                    false,                             true  },
 		{ "OES_vertex_type_10_10_10_2",               false,                             true  },
@@ -2249,6 +2255,7 @@ namespace bgfx { namespace gl
 			, m_maxMsaa(0)
 			, m_vao(0)
 			, m_blitSupported(false)
+			, m_textureViewSupported(false)
 			, m_readBackSupported(BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL) )
 			, m_vaoSupport(false)
 			, m_samplerObjectSupport(false)
@@ -2906,6 +2913,13 @@ namespace bgfx { namespace gl
 					m_blitSupported = NULL != glCopyImageSubData;
 				}
 
+				if (s_extension[Extension::ARB_texture_view].m_supported
+				||  s_extension[Extension::EXT_texture_view].m_supported
+				||  s_extension[Extension::OES_texture_view].m_supported)
+				{
+					m_textureViewSupported = NULL != glTextureView;
+				}
+
 				g_caps.supported |= m_blitSupported || BX_ENABLED(BGFX_GL_CONFIG_BLIT_EMULATION)
 					? BGFX_CAPS_TEXTURE_BLIT
 					: 0
@@ -3425,33 +3439,85 @@ namespace bgfx { namespace gl
 			m_textures[_handle.idx].update(_side, _mip, _rect, _z, _depth, _pitch, _mem);
 		}
 
-		void readTexture(TextureHandle _handle, void* _data, uint8_t _mip) override
+		void readTexture(TextureHandle _handle, void* _data, uint16_t _layer, uint8_t _mip) override
 		{
 			if (m_readBackSupported)
 			{
 				const TextureGL& texture = m_textures[_handle.idx];
 				const bool compressed    = bimg::isCompressed(bimg::TextureFormat::Enum(texture.m_textureFormat) );
 
-				GL_CHECK(glBindTexture(texture.m_target, texture.m_id) );
-
-				if (compressed)
+				if (texture.m_numLayers > 1
+				&&  NULL != glGetTextureSubImage)
 				{
-					GL_CHECK(glGetCompressedTexImage(texture.m_target
-						, _mip
-						, _data
-						) );
+					const uint32_t mipWidth  = bx::max<uint32_t>(1, texture.m_width  >> _mip);
+					const uint32_t mipHeight = bx::max<uint32_t>(1, texture.m_height >> _mip);
+
+					bimg::TextureInfo ti;
+					bimg::imageGetSize(
+						  &ti
+						, uint16_t(mipWidth)
+						, uint16_t(mipHeight)
+						, 1
+						, false
+						, false
+						, 1
+						, bimg::TextureFormat::Enum(texture.m_textureFormat)
+						);
+
+					if (compressed)
+					{
+						GL_CHECK(glGetCompressedTextureSubImage(texture.m_id
+							, _mip
+							, 0
+							, 0
+							, _layer
+							, mipWidth
+							, mipHeight
+							, 1
+							, ti.storageSize
+							, _data
+							) );
+					}
+					else
+					{
+						GL_CHECK(glGetTextureSubImage(texture.m_id
+							, _mip
+							, 0
+							, 0
+							, _layer
+							, mipWidth
+							, mipHeight
+							, 1
+							, texture.m_fmt
+							, texture.m_type
+							, ti.storageSize
+							, _data
+							) );
+					}
 				}
 				else
 				{
-					GL_CHECK(glGetTexImage(texture.m_target
-						, _mip
-						, texture.m_fmt
-						, texture.m_type
-						, _data
-						) );
-				}
+					GL_CHECK(glBindTexture(texture.m_target, texture.m_id) );
 
-				GL_CHECK(glBindTexture(texture.m_target, 0) );
+					if (compressed)
+					{
+						GL_CHECK(glGetCompressedTexImage(texture.m_target
+							, _mip
+							, _data
+							) );
+					}
+					else
+					{
+						GL_CHECK(glGetTexImage(texture.m_target
+							, _mip
+							, texture.m_fmt
+							, texture.m_type
+							, _data
+							) );
+					}
+
+					GL_CHECK(glBindTexture(texture.m_target, 0) );
+				}
 			}
 			else if (BX_ENABLED(BGFX_GL_CONFIG_TEXTURE_READ_BACK_EMULATION) )
 			{
@@ -3461,18 +3527,31 @@ namespace bgfx { namespace gl
 				if (!compressed)
 				{
 					Attachment at[1];
-					at[0].init(_handle);
+					at[0].init(_handle, Access::Read, _layer, 1, _mip);
 
 					FrameBufferGL frameBuffer;
 					frameBuffer.create(BX_COUNTOF(at), at);
 					GL_CHECK(glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer.m_fbo[0]) );
-					GL_CHECK(glFramebufferTexture2D(
-						  GL_FRAMEBUFFER
-						, GL_COLOR_ATTACHMENT0
-						, GL_TEXTURE_2D
-						, texture.m_id
-						, at[0].mip
-						) );
+					if (texture.m_numLayers > 1)
+					{
+						GL_CHECK(glFramebufferTextureLayer(
+							  GL_FRAMEBUFFER
+							, GL_COLOR_ATTACHMENT0
+							, texture.m_id
+							, at[0].mip
+							, _layer
+							) );
+					}
+					else
+					{
+						GL_CHECK(glFramebufferTexture2D(
+							  GL_FRAMEBUFFER
+							, GL_COLOR_ATTACHMENT0
+							, GL_TEXTURE_2D
+							, texture.m_id
+							, at[0].mip
+							) );
+					}
 
 					if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL) || m_gles3)
 					{
@@ -4220,6 +4299,8 @@ namespace bgfx { namespace gl
 			{
 				m_samplerStateCache.invalidate();
 			}
+
+			m_textureViewStateCache.invalidate();
 		}
 
 		void setSamplerState(uint32_t _stage, uint32_t _numMips, uint32_t _flags, const float _rgba[4])
@@ -4247,7 +4328,7 @@ namespace bgfx { namespace gl
 					murmur.add(-1);
 					hash = murmur.end();
 
-					sampler = m_samplerStateCache.find(hash);
+					sampler = m_samplerStateCache.find(hash).idx;
 				}
 				else
 				{
@@ -4257,17 +4338,17 @@ namespace bgfx { namespace gl
 					if (NULL != _rgba)
 					{
 						hasBorderColor = true;
-						sampler = UINT32_MAX;
+						sampler = 0;
 					}
 					else
 					{
-						sampler = m_samplerStateCache.find(hash);
+						sampler = m_samplerStateCache.find(hash).idx;
 					}
 				}
 
-				if (UINT32_MAX == sampler)
+				if (0 == sampler)
 				{
-					sampler = m_samplerStateCache.add(hash);
+					GL_CHECK(glGenSamplers(1, &sampler) );
 
 					GL_CHECK(glSamplerParameteri(sampler
 						, GL_TEXTURE_WRAP_S
@@ -4319,6 +4400,8 @@ namespace bgfx { namespace gl
 							GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_FUNC, s_cmpFunc[cmpFunc]) );
 						}
 					}
+
+					m_samplerStateCache.add(hash, SamplerGL{sampler});
 				}
 
 				GL_CHECK(glBindSampler(_stage, sampler) );
@@ -4809,7 +4892,8 @@ namespace bgfx { namespace gl
 		TimerQueryGL m_gpuTimer;
 		OcclusionQueryGL m_occlusionQuery;
 
-		SamplerStateCache m_samplerStateCache;
+		StateCacheT<SamplerGL> m_samplerStateCache;
+		StateCacheT<TextureViewGL> m_textureViewStateCache;
 		UniformStateCache m_uniformStateCache;
 
 		TextVideoMem m_textVideoMem;
@@ -4827,6 +4911,7 @@ namespace bgfx { namespace gl
 		GLuint m_vao;
 		uint16_t m_maxLabelLen;
 		bool m_blitSupported;
+		bool m_textureViewSupported;
 		bool m_readBackSupported;
 		bool m_vaoSupport;
 		bool m_samplerObjectSupport;
@@ -5628,6 +5713,9 @@ namespace bgfx { namespace gl
 				: s_textureFormat[m_textureFormat].m_internalFmt
 				;
 
+			m_internalFmt = internalFmt;
+			m_numLayers   = textureArray ? _depth : 1;
+
 			if (textureArray)
 			{
 				GL_CHECK(glTexStorage3D(_target
@@ -5637,6 +5725,7 @@ namespace bgfx { namespace gl
 					, m_height
 					, _depth
 					) );
+				m_immutableStorage = true;
 			}
 			else if (computeWrite)
 			{
@@ -5659,6 +5748,7 @@ namespace bgfx { namespace gl
 						, m_height
 						) );
 				}
+				m_immutableStorage = true;
 			}
 
 			setSamplerState(uint32_t(_flags), NULL);
@@ -5979,6 +6069,8 @@ namespace bgfx { namespace gl
 
 	void TextureGL::destroy()
 	{
+		s_renderGL->m_textureViewStateCache.invalidateWithParent(uint16_t(this - s_renderGL->m_textures) );
+
 		if (0 == (m_flags & BGFX_SAMPLER_INTERNAL_SHARED)
 		&&  0 != m_id)
 		{
@@ -6003,9 +6095,12 @@ namespace bgfx { namespace gl
 
 	void TextureGL::update(uint8_t _side, uint8_t _mip, const Rect& _rect, uint16_t _z, uint16_t _depth, uint16_t _pitch, const Memory* _mem)
 	{
+		const bimg::ImageBlockInfo& blockInfo = bimg::getBlockInfo(bimg::TextureFormat::Enum(m_requestedFormat) );
+		const bool compressed = bimg::isCompressed(bimg::TextureFormat::Enum(m_requestedFormat) );
 		const uint32_t bpp = bimg::getBitsPerPixel(bimg::TextureFormat::Enum(m_textureFormat) );
-		const uint32_t rectpitch = _rect.m_width*bpp/8;
-		uint32_t srcpitch  = UINT16_MAX == _pitch ? rectpitch : _pitch;
+
+		uint32_t rectPitch = _rect.m_width*bpp/8;
+		uint32_t srcPitch  = UINT16_MAX == _pitch ? rectPitch : _pitch;
 
 		GL_CHECK(glBindTexture(m_target, m_id) );
 		GL_CHECK(glPixelStorei(GL_UNPACK_ALIGNMENT, 1) );
@@ -6021,9 +6116,8 @@ namespace bgfx { namespace gl
 			&& !s_renderGL->m_textureSwizzleSupport
 			;
 		const bool unpackRowLength = !!BGFX_CONFIG_RENDERER_OPENGL || s_extension[Extension::EXT_unpack_subimage].m_supported;
-		const bool compressed      = bimg::isCompressed(bimg::TextureFormat::Enum(m_requestedFormat) );
 		const bool convert         = false
-			|| (compressed && m_textureFormat != m_requestedFormat)
+			|| m_textureFormat != m_requestedFormat
 			|| swizzle
 			;
 
@@ -6038,15 +6132,25 @@ namespace bgfx { namespace gl
 		uint32_t width  = rect.m_width;
 		uint32_t height = rect.m_height;
 
+		if (compressed
+		&& !convert)
+		{
+			const uint32_t numBlocksX = (width + blockInfo.blockWidth - 1) / blockInfo.blockWidth;
+			rectPitch = numBlocksX * blockInfo.blockSize;
+			srcPitch  = UINT16_MAX == _pitch ? rectPitch : _pitch;
+		}
+
 		uint8_t* temp = NULL;
 		if (convert
-		||  !unpackRowLength)
+		||  !unpackRowLength
+		||  (compressed && UINT16_MAX != _pitch && srcPitch != rectPitch) )
 		{
-			temp = (uint8_t*)bx::alloc(g_allocator, rectpitch*height);
+			temp = (uint8_t*)bx::alloc(g_allocator, rectPitch*height);
 		}
-		else if (unpackRowLength)
+		else if (unpackRowLength
+		     &&  !compressed)
 		{
-			GL_CHECK(glPixelStorei(GL_UNPACK_ROW_LENGTH, srcpitch*8/bpp) );
+			GL_CHECK(glPixelStorei(GL_UNPACK_ROW_LENGTH, srcPitch*8/bpp) );
 		}
 
 		if (compressed
@@ -6054,9 +6158,11 @@ namespace bgfx { namespace gl
 		{
 			const uint8_t* data = _mem->data;
 
-			if (!unpackRowLength)
+			const uint32_t numBlocksY = (height + blockInfo.blockHeight - 1) / blockInfo.blockHeight;
+
+			if (NULL != temp)
 			{
-				bimg::imageCopy(temp, width, height, 1, bpp, srcpitch, data);
+				bimg::imageCopy(temp, numBlocksY, srcPitch, 1, data, rectPitch);
 				data = temp;
 			}
 			const GLenum internalFmt = (0 != (m_flags & BGFX_TEXTURE_SRGB) )
@@ -6072,7 +6178,7 @@ namespace bgfx { namespace gl
 				, rect.m_height
 				, _depth
 				, internalFmt
-				, _mem->size
+				, rectPitch*numBlocksY
 				, data
 				) );
 		}
@@ -6082,16 +6188,16 @@ namespace bgfx { namespace gl
 
 			if (convert)
 			{
-				bimg::imageDecodeToRgba8(g_allocator, temp, data, width, height, srcpitch, bimg::TextureFormat::Enum(m_requestedFormat) );
+				bimg::imageDecodeToRgba8(g_allocator, temp, data, width, height, rectPitch, bimg::TextureFormat::Enum(m_requestedFormat) );
 				data = temp;
-				srcpitch = rectpitch;
+				srcPitch = rectPitch;
 			}
 
 			if (BX_IGNORE_C4127(true
 			&&  !unpackRowLength
 			&&  !convert) )
 			{
-				bimg::imageCopy(temp, width, height, 1, bpp, srcpitch, data);
+				bimg::imageCopy(temp, width, height, 1, bpp, srcPitch, data);
 				data = temp;
 			}
 
@@ -6219,7 +6325,61 @@ namespace bgfx { namespace gl
 		}
 	}
 
-	void TextureGL::commit(uint32_t _stage, uint32_t _flags, const float _palette[][4])
+	GLuint TextureGL::getViewId(uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers)
+	{
+		const uint8_t  firstMip   = bx::min<uint8_t>(_firstMip, uint8_t(m_numMips - 1) );
+		const uint8_t  numMips    = bx::min<uint8_t>(_numMips, uint8_t(m_numMips - firstMip) );
+		const uint16_t numLayers0 = uint16_t(bx::max<uint32_t>(m_numLayers, 1) );
+		const uint16_t firstLayer = bx::min<uint16_t>(_firstLayer, uint16_t(numLayers0 - 1) );
+		const uint16_t numLayers  = bx::min<uint16_t>(_numLayers, uint16_t(numLayers0 - firstLayer) );
+
+		const bool fullRange = 0 == firstMip
+			&& numMips   >= m_numMips
+			&& 0 == firstLayer
+			&& numLayers >= numLayers0
+			;
+
+		if (fullRange
+		|| !s_renderGL->m_textureViewSupported
+		|| !m_immutableStorage
+		||  GL_ZERO == m_internalFmt
+		||  NULL == glTextureView)
+		{
+			return m_id;
+		}
+
+		const uint16_t parent = uint16_t(this - s_renderGL->m_textures);
+
+		const uint64_t key = 0
+			| (uint64_t(parent)     << 48)
+			| (uint64_t(firstMip)   << 40)
+			| (uint64_t(numMips)    << 32)
+			| (uint64_t(firstLayer) << 16)
+			| (uint64_t(numLayers)  <<  0)
+			;
+
+		GLuint viewId = s_renderGL->m_textureViewStateCache.find(key).idx;
+		if (0 != viewId)
+		{
+			return viewId;
+		}
+
+		GL_CHECK(glGenTextures(1, &viewId) );
+		s_renderGL->m_textureViewStateCache.add(key, TextureViewGL{viewId}, parent);
+		GL_CHECK(glTextureView(viewId
+			, m_target
+			, m_id
+			, m_internalFmt
+			, firstMip
+			, numMips
+			, firstLayer
+			, numLayers
+			) );
+
+		return viewId;
+	}
+
+	void TextureGL::commit(uint32_t _stage, uint32_t _flags, const float _palette[][4], uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers)
 	{
 		const uint32_t flags = 0 == (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags)
 			? _flags
@@ -6227,8 +6387,10 @@ namespace bgfx { namespace gl
 			;
 		const uint32_t index = (flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT;
 
+		const GLuint id = getViewId(_firstMip, _numMips, _firstLayer, _numLayers);
+
 		GL_CHECK(glActiveTexture(GL_TEXTURE0+_stage) );
-		GL_CHECK(glBindTexture(m_target, m_id) );
+		GL_CHECK(glBindTexture(m_target, id) );
 
 		if (s_renderGL->m_samplerObjectSupport)
 		{
@@ -7733,7 +7895,7 @@ namespace bgfx { namespace gl
 								case Binding::Texture:
 									{
 										TextureGL& texture = m_textures[bind.m_idx];
-										texture.commit(ii, bind.m_samplerFlags, _render->m_colorPalette);
+										texture.commit(ii, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstMip, bind.m_numMips, bind.m_firstLayer, bind.m_numLayers);
 									}
 									break;
 
@@ -7742,7 +7904,7 @@ namespace bgfx { namespace gl
 										const TextureGL& texture = m_textures[bind.m_idx];
 										GL_CHECK(glBindImageTexture(ii
 											, texture.m_id
-											, bind.m_mip
+											, bind.m_firstMip
 											, texture.isCubeMap() || texture.m_target == GL_TEXTURE_2D_ARRAY ? GL_TRUE : GL_FALSE
 											, 0
 											, s_access[bind.m_access]
@@ -8256,13 +8418,13 @@ namespace bgfx { namespace gl
 										{
 											const TextureGL& texture = m_textures[bind.m_idx];
 											GL_CHECK(glBindImageTexture(stage
-																		, texture.m_id
-																		, bind.m_mip
-																		, texture.isCubeMap() || texture.m_target == GL_TEXTURE_2D_ARRAY ? GL_TRUE : GL_FALSE
-																		, 0
-																		, s_access[bind.m_access]
-																		, s_imageFormat[bind.m_format])
-													);
+												, texture.m_id
+												, bind.m_firstMip
+												, texture.isCubeMap() || texture.m_target == GL_TEXTURE_2D_ARRAY ? GL_TRUE : GL_FALSE
+												, 0
+												, s_access[bind.m_access]
+												, s_imageFormat[bind.m_format])
+												);
 											barrier |= GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
 										}
 										break;
@@ -8270,7 +8432,7 @@ namespace bgfx { namespace gl
 									case Binding::Texture:
 										{
 											TextureGL& texture = m_textures[bind.m_idx];
-											texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette);
+											texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstMip, bind.m_numMips, bind.m_firstLayer, bind.m_numLayers);
 										}
 										break;
 
@@ -8403,7 +8565,7 @@ namespace bgfx { namespace gl
 								const uint8_t idx = it.idx;
 
 								const VertexBufferGL& vb = m_vertexBuffers[draw.m_stream[idx].m_handle.idx];
-								uint16_t decl = !isValid(vb.m_layoutHandle) ? draw.m_stream[idx].m_layoutHandle.idx : vb.m_layoutHandle.idx;
+								uint16_t decl = isValid(draw.m_stream[idx].m_layoutHandle) ? draw.m_stream[idx].m_layoutHandle.idx : vb.m_layoutHandle.idx;
 								const VertexLayout& layout = m_vertexLayouts[decl];
 
 								numVertices = bx::min(numVertices, vb.m_size/layout.m_stride);

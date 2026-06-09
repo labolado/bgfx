@@ -380,9 +380,12 @@ VK_IMPORT_DEVICE
 			EXT_line_rasterization,
 			EXT_memory_budget,
 			EXT_shader_viewport_index_layer,
+			EXT_surface_maintenance1,
+			EXT_swapchain_maintenance1,
 			KHR_draw_indirect_count,
 			KHR_fragment_shading_rate,
 			KHR_get_physical_device_properties2,
+			KHR_get_surface_capabilities2,
 
 #	if BX_PLATFORM_ANDROID
 			KHR_android_surface,
@@ -420,9 +423,12 @@ VK_IMPORT_DEVICE
 		{ "VK_EXT_line_rasterization",              1, false, false, true,                                                          Layer::Count },
 		{ "VK_EXT_memory_budget",                   1, false, false, true,                                                          Layer::Count },
 		{ "VK_EXT_shader_viewport_index_layer",     1, false, false, true,                                                          Layer::Count },
+		{ "VK_EXT_surface_maintenance1",            1, false, false, true,                                                          Layer::Count },
+		{ "VK_EXT_swapchain_maintenance1",          1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_draw_indirect_count",             1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_fragment_shading_rate",           1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_get_physical_device_properties2", 1, false, false, true,                                                          Layer::Count },
+		{ "VK_KHR_get_surface_capabilities2",       1, false, false, true,                                                          Layer::Count },
 #	if BX_PLATFORM_ANDROID
 		{ VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,    1, false, false, true,                                                          Layer::Count },
 #	elif BX_PLATFORM_LINUX
@@ -1221,6 +1227,7 @@ VK_IMPORT_DEVICE
 			VkPhysicalDeviceLineRasterizationFeaturesEXT lineRasterizationFeatures = {};
 			VkPhysicalDeviceCustomBorderColorFeaturesEXT customBorderColorFeatures = {};
 			VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragmentShadingRate = {};
+			VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainMaintenance1Features = {};
 
 			m_fbh = BGFX_INVALID_HANDLE;
 			bx::memSet(m_uniforms, 0, sizeof(m_uniforms) );
@@ -1596,6 +1603,13 @@ VK_IMPORT_INSTANCE
 
 				bx::memCopy(&s_extension[0], &physicalDeviceExtensions[physicalDeviceIdx][0], sizeof(s_extension) );
 
+				if ( s_extension[Extension::EXT_swapchain_maintenance1].m_supported
+				&& (!s_extension[Extension::EXT_surface_maintenance1  ].m_supported || !s_extension[Extension::KHR_get_surface_capabilities2].m_supported)
+				   )
+				{
+					s_extension[Extension::EXT_swapchain_maintenance1].m_supported = false;
+				}
+
 				m_deviceShadingRateImageProperties = {};
 				m_deviceShadingRateImageProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR;
 
@@ -1642,6 +1656,14 @@ VK_IMPORT_INSTANCE
 						customBorderColorFeatures.pNext = NULL;
 					}
 
+					if (s_extension[Extension::EXT_swapchain_maintenance1].m_supported)
+					{
+						next->pNext = (VkBaseOutStructure*)&swapchainMaintenance1Features;
+						next = (VkBaseOutStructure*)&swapchainMaintenance1Features;
+						swapchainMaintenance1Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+						swapchainMaintenance1Features.pNext = NULL;
+					}
+
 					nextFeatures = deviceFeatures2.pNext;
 
 					vkGetPhysicalDeviceFeatures2KHR(m_physicalDevice, &deviceFeatures2);
@@ -1664,9 +1686,10 @@ VK_IMPORT_INSTANCE
 					fragmentShadingRate.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
 					fragmentShadingRate.pNext = NULL;
 
-					BX_ASSERT(vkGetPhysicalDeviceFeatures2KHR,
-							"vkGetPhysicalDeviceFeatures2KHR should not be NULL when the "
-							"KHR_fragment_shading_rate extension is supported.");
+					BX_ASSERT(NULL != vkGetPhysicalDeviceFeatures2KHR
+						, "vkGetPhysicalDeviceFeatures2KHR should not be NULL when the "
+						  "KHR_fragment_shading_rate extension is supported."
+						);
 					vkGetPhysicalDeviceFeatures2KHR(m_physicalDevice, &deviceFeatures2);
 
 					if (!fragmentShadingRate.pipelineFragmentShadingRate
@@ -1719,6 +1742,11 @@ VK_IMPORT_INSTANCE
 					;
 
 				m_timerQuerySupport = m_deviceProperties.limits.timestampComputeAndGraphics;
+
+				m_swapchainMaintenance1Supported = true
+					&& s_extension[Extension::EXT_swapchain_maintenance1].m_supported
+					&& swapchainMaintenance1Features.swapchainMaintenance1
+					;
 
 				const bool indirectDrawSupport = true
 					&& m_deviceFeatures.multiDrawIndirect
@@ -1980,13 +2008,13 @@ VK_IMPORT_INSTANCE
 					BX_TRACE("\t%s", enabledExtension[ii]);
 				}
 
-				float queuePriorities[1] = { 0.0f };
+				const float queuePriorities[] = { 0.0f };
 				VkDeviceQueueCreateInfo dcqi;
 				dcqi.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 				dcqi.pNext = NULL;
 				dcqi.flags = 0;
 				dcqi.queueFamilyIndex = m_globalQueueFamily;
-				dcqi.queueCount       = 1;
+				dcqi.queueCount       = BX_COUNTOF(queuePriorities);
 				dcqi.pQueuePriorities = queuePriorities;
 
 				VkDeviceCreateInfo dci;
@@ -2501,7 +2529,7 @@ VK_IMPORT_DEVICE
 			m_textures[_handle.idx].update(m_commandBuffer, _side, _mip, _rect, _z, _depth, _pitch, _mem);
 		}
 
-		void readTexture(TextureHandle _handle, void* _data, uint8_t _mip) override
+		void readTexture(TextureHandle _handle, void* _data, uint16_t _layer, uint8_t _mip) override
 		{
 			TextureVK& texture = m_textures[_handle.idx];
 
@@ -2518,6 +2546,7 @@ VK_IMPORT_DEVICE
 				, stagingBuffer
 				, texture.m_currentImageLayout
 				, texture.m_aspectFlags
+				, _layer
 				, _mip
 				);
 
@@ -2802,6 +2831,7 @@ VK_IMPORT_DEVICE
 
 			const VertexLayout* layout = &m_vertexLayouts[_blitter.m_vb->layoutHandle.idx];
 			VkPipeline pso = getPipeline(state
+				, 0
 				, packStencil(BGFX_STENCIL_DEFAULT, BGFX_STENCIL_DEFAULT)
 				, 1
 				, &layout
@@ -2969,22 +2999,47 @@ VK_IMPORT_DEVICE
 				return suspended;
 			}
 
-			uint32_t flags = _resolution.reset & ~(0
+			uint32_t maskFlags = ~(0
 				| BGFX_RESET_SUSPEND
 				| BGFX_RESET_MAXANISOTROPY
 				| BGFX_RESET_DEPTH_CLAMP
 				);
 
-			if (false
-			||  m_resolution.formatColor        != _resolution.formatColor
-			||  m_resolution.formatDepthStencil != _resolution.formatDepthStencil
-			||  m_resolution.width              != _resolution.width
-			||  m_resolution.height             != _resolution.height
-			||  m_resolution.reset              != flags
-			||  m_backBuffer.m_swapChain.m_needToRecreateSurface
-			||  m_backBuffer.m_swapChain.m_needToRecreateSwapchain)
+			if (m_swapchainMaintenance1Supported
+			&& !!((_resolution.reset ^ m_resolution.reset) & BGFX_RESET_VSYNC) )
 			{
-				flags &= ~BGFX_RESET_INTERNAL_FORCE;
+				m_resolution.reset = 0
+					| (m_resolution.reset & ~BGFX_RESET_VSYNC)
+					| ( _resolution.reset &  BGFX_RESET_VSYNC)
+					;
+
+				for (uint16_t ii = 0; ii < m_numWindows; ++ii)
+				{
+					FrameBufferVK& fb = isValid(m_windows[ii])
+						? m_frameBuffers[m_windows[ii].idx]
+						: m_backBuffer
+						;
+
+					fb.m_swapChain.m_resolution.reset = 0
+						| (fb.m_swapChain.m_resolution.reset & ~BGFX_RESET_VSYNC)
+						| (                _resolution.reset &  BGFX_RESET_VSYNC)
+						;
+				}
+
+				maskFlags &= ~BGFX_RESET_VSYNC;
+			}
+
+			if (false
+			||  m_resolution.formatColor        !=  _resolution.formatColor
+			||  m_resolution.formatDepthStencil !=  _resolution.formatDepthStencil
+			||  m_resolution.width              !=  _resolution.width
+			||  m_resolution.height             !=  _resolution.height
+			|| (m_resolution.reset&maskFlags)   != (_resolution.reset&maskFlags)
+			||  m_backBuffer.m_swapChain.m_needToRecreateSurface
+			||  m_backBuffer.m_swapChain.m_needToRecreateSwapchain
+			   )
+			{
+				uint32_t flags = _resolution.reset & (~BGFX_RESET_INTERNAL_FORCE);
 
 				if (m_backBuffer.m_nwh != g_platformData.nwh)
 				{
@@ -3697,19 +3752,26 @@ VK_IMPORT_DEVICE
 			return sampler;
 		}
 
-		VkImageView getCachedImageView(TextureHandle _handle, uint32_t _mip, uint32_t _numMips, VkImageViewType _type, bool _stencil = false)
+		VkImageView getCachedImageView(TextureHandle _handle, uint32_t _mip, uint32_t _numMips, VkImageViewType _type, bool _stencil = false, uint32_t _firstLayer = 0, uint32_t _numLayers = UINT32_MAX)
 		{
 			const TextureVK& texture = m_textures[_handle.idx];
 
 			_stencil = _stencil && !!(texture.m_aspectFlags & VK_IMAGE_ASPECT_STENCIL_BIT);
 
+			const uint32_t firstLayer = bx::min<uint32_t>(_firstLayer, texture.m_numSides);
+			const uint32_t numLayers  = bx::min<uint32_t>(_numLayers,  texture.m_numSides - firstLayer);
+			const uint32_t firstMip   = bx::min<uint32_t>(_mip,        texture.m_numMips);
+			const uint32_t numMips    = bx::min<uint32_t>(_numMips,    texture.m_numMips - firstMip);
+
 			bx::HashMurmur2A hash;
 			hash.begin();
 			hash.add(_handle.idx);
-			hash.add(_mip);
-			hash.add(_numMips);
+			hash.add(firstMip);
+			hash.add(numMips);
 			hash.add(_type);
 			hash.add(_stencil);
+			hash.add(firstLayer);
+			hash.add(numLayers);
 			uint32_t hashKey = hash.end();
 
 			VkImageView* viewCached = m_imageViewCache.find(hashKey);
@@ -3725,7 +3787,7 @@ VK_IMPORT_DEVICE
 				;
 
 			VkImageView view;
-			VK_CHECK(texture.createView(0, texture.m_numSides, _mip, _numMips, _type, aspectMask, false, &view) );
+			VK_CHECK(texture.createView(firstLayer, numLayers, firstMip, numMips, _type, aspectMask, false, &view) );
 			m_imageViewCache.add(hashKey, view, _handle.idx);
 
 			return view;
@@ -3771,7 +3833,7 @@ VK_IMPORT_DEVICE
 			return pipeline;
 		}
 
-		VkPipeline getPipeline(uint64_t _state, uint64_t _stencil, uint8_t _numStreams, const VertexLayout** _layouts, ProgramHandle _program, uint8_t _numInstanceData)
+		VkPipeline getPipeline(uint64_t _state, uint32_t _rgba, uint64_t _stencil, uint8_t _numStreams, const VertexLayout** _layouts, ProgramHandle _program, uint8_t _numInstanceData)
 		{
 			ProgramVK& program = m_program[_program.idx];
 
@@ -3814,6 +3876,7 @@ VK_IMPORT_DEVICE
 			bx::HashMurmur2A murmur;
 			murmur.begin();
 			murmur.add(_state);
+			murmur.add(!!(BGFX_STATE_BLEND_INDEPENDENT & _state) ? _rgba : 0);
 			murmur.add(_stencil);
 			murmur.add(program.m_vsh->m_hash);
 			murmur.add(program.m_vsh->m_attrMask, sizeof(program.m_vsh->m_attrMask) );
@@ -3843,7 +3906,7 @@ VK_IMPORT_DEVICE
 			VkPipelineColorBlendAttachmentState blendAttachmentState[BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS];
 			VkPipelineColorBlendStateCreateInfo colorBlendState;
 			colorBlendState.pAttachments = blendAttachmentState;
-			setBlendState(colorBlendState, _state);
+			setBlendState(colorBlendState, _state, _rgba);
 
 			VkPipelineInputAssemblyStateCreateInfo inputAssemblyState;
 			inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -4096,8 +4159,8 @@ VK_IMPORT_DEVICE
 							imageInfo[imageCount].sampler     = VK_NULL_HANDLE;
 							imageInfo[imageCount].imageView   = getCachedImageView(
 								  { bind.m_idx }
-								, bind.m_mip
-								, 1
+								, bind.m_firstMip
+								, bind.m_numMips
 								, type
 								);
 							wds[wdsCount].pImageInfo = &imageInfo[imageCount];
@@ -4157,10 +4220,12 @@ VK_IMPORT_DEVICE
 							imageInfo[imageCount].sampler     = sampler;
 							imageInfo[imageCount].imageView   = getCachedImageView(
 								  { bind.m_idx }
-								, 0
-								, texture.m_numMips
+								, bind.m_firstMip
+								, bind.m_numMips
 								, type
 								, sampleStencil
+								, bind.m_firstLayer
+								, bind.m_numLayers
 								);
 
 							wds[wdsCount].sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -4725,6 +4790,7 @@ VK_IMPORT_DEVICE
 		bool m_lineAASupport;
 		bool m_borderColorSupport;
 		bool m_timerQuerySupport;
+		bool m_swapchainMaintenance1Supported = false;
 
 		FrameBufferVK m_backBuffer;
 
@@ -5100,52 +5166,19 @@ VK_DESTROY
 		}
 	}
 
-	void ChunkedScratchBufferVK::create(uint32_t _chunkSize, uint32_t _numChunks, VkBufferUsageFlags usage, uint32_t _align)
-	{
-		const uint32_t chunkSize = bx::alignUp(_chunkSize, 1<<20);
-
-		m_chunkPos  = 0;
-		m_chunkSize = chunkSize;
-		m_align     = _align;
-		m_usage     = usage;
-
-		m_chunkControl.m_size = 0;
-		m_chunkControl.reset();
-
-		bx::memSet(m_consume, 0, sizeof(m_consume) );
-		m_totalUsed = 0;
-
-		for (uint32_t ii = 0; ii < _numChunks; ++ii)
-		{
-			addChunk();
-		}
-	}
-
 	void ChunkedScratchBufferVK::createUniform(uint32_t _chunkSize, uint32_t _numChunks)
 	{
 		const VkPhysicalDeviceLimits& deviceLimits = s_renderVK->m_deviceProperties.limits;
 		const uint32_t align = uint32_t(deviceLimits.minUniformBufferOffsetAlignment);
 
-		create(_chunkSize, _numChunks, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, align);
+		m_usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		create(_chunkSize, _numChunks, align);
 	}
 
-	void ChunkedScratchBufferVK::destroy()
-	{
-		for (Chunk& sbc : m_chunks)
-		{
-			vkUnmapMemory(s_renderVK->m_device, sbc.deviceMem.mem);
-
-			s_renderVK->release(sbc.buffer);
-			s_renderVK->recycleMemory(sbc.deviceMem);
-		}
-	}
-
-	void ChunkedScratchBufferVK::addChunk(uint32_t _at)
+	void ChunkedScratchBufferVK::createChunk(ChunkVK& _chunk)
 	{
 		const VkAllocationCallbacks* allocatorCb = s_renderVK->m_allocatorCb;
 		const VkDevice device = s_renderVK->m_device;
-
-		Chunk sbc;
 
 		VkBufferCreateInfo bci =
 		{
@@ -5163,161 +5196,57 @@ VK_DESTROY
 			  device
 			, &bci
 			, allocatorCb
-			, &sbc.buffer
+			, &_chunk.buffer
 			) );
 
 		VkMemoryRequirements mr;
 		vkGetBufferMemoryRequirements(
 			  device
-			, sbc.buffer
+			, _chunk.buffer
 			, &mr
 			);
 
 		VkMemoryPropertyFlags flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-		VkResult result = s_renderVK->allocateMemory(&mr, flags, &sbc.deviceMem, true);
+		VkResult result = s_renderVK->allocateMemory(&mr, flags, &_chunk.deviceMem, true);
 
 		if (VK_SUCCESS != result)
 		{
 			flags &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-			VK_CHECK(s_renderVK->allocateMemory(&mr, flags, &sbc.deviceMem, true) );
+			VK_CHECK(s_renderVK->allocateMemory(&mr, flags, &_chunk.deviceMem, true) );
 		}
 
 		m_chunkSize = bx::narrowCast<uint32_t>(mr.size);
 
-		VK_CHECK(vkBindBufferMemory(device, sbc.buffer, sbc.deviceMem.mem, sbc.deviceMem.offset) );
+		VK_CHECK(vkBindBufferMemory(device, _chunk.buffer, _chunk.deviceMem.mem, _chunk.deviceMem.offset) );
 
-		VK_CHECK(vkMapMemory(device, sbc.deviceMem.mem, sbc.deviceMem.offset, m_chunkSize, 0, (void**)&sbc.data) );
-
-		const uint32_t lastChunk = bx::max(uint32_t(m_chunks.size()-1), 1);
-		const uint32_t at = UINT32_MAX == _at ? lastChunk : _at;
-		const uint32_t chunkIndex = at % bx::max(m_chunks.size(), 1);
-
-		m_chunkControl.resize(m_chunkSize);
-
-		m_chunks.insert(m_chunks.begin() + chunkIndex, sbc);
+		VK_CHECK(vkMapMemory(device, _chunk.deviceMem.mem, _chunk.deviceMem.offset, m_chunkSize, 0, (void**)&_chunk.data) );
 	}
 
-	ChunkedScratchBufferAlloc ChunkedScratchBufferVK::alloc(uint32_t _size)
+	void ChunkedScratchBufferVK::destroyChunk(ChunkVK& _chunk)
 	{
-		BX_ASSERT(_size < m_chunkSize, "Size can't be larger than chunk size (size: %d, chunk size: %d)!", _size, m_chunkSize);
+		vkUnmapMemory(s_renderVK->m_device, _chunk.deviceMem.mem);
 
-		uint32_t offset     = m_chunkPos;
-		uint32_t nextOffset = offset + _size;
-		uint32_t chunkIdx   = m_chunkControl.m_write/m_chunkSize;
-
-		if (nextOffset >= m_chunkSize)
-		{
-			const uint32_t total = m_chunkSize - m_chunkPos + _size;
-			uint32_t reserved    = m_chunkControl.reserve(total, true);
-
-			if (total != reserved)
-			{
-				addChunk(chunkIdx + 1);
-				reserved = m_chunkControl.reserve(total, true);
-				BX_ASSERT(total == reserved, "Failed to reserve chunk memory after adding chunk.");
-			}
-
-			m_chunkPos = 0;
-			offset     = 0;
-			nextOffset = _size;
-			chunkIdx   = m_chunkControl.m_write/m_chunkSize;
-		}
-		else
-		{
-			const uint32_t size = m_chunkControl.reserve(_size, true);
-			BX_ASSERT(size == _size, "Failed to reserve chunk memory.");
-			BX_UNUSED(size);
-		}
-
-		m_chunkPos = nextOffset;
-
-		return { .offset = offset, .chunkIdx = chunkIdx };
+		s_renderVK->release(_chunk.buffer);
+		s_renderVK->recycleMemory(_chunk.deviceMem);
 	}
 
-	void ChunkedScratchBufferVK::write(ChunkedScratchBufferOffset& _outSbo, const void* _vsData, uint32_t _vsSize, const void* _fsData, uint32_t _fsSize)
+	void ChunkedScratchBufferVK::flushChunk(ChunkVK& _chunk, uint32_t _size)
 	{
-		const uint32_t vsSize = bx::strideAlign(_vsSize, m_align);
-		const uint32_t fsSize = bx::strideAlign(_fsSize, m_align);
-		const uint32_t size   = vsSize + fsSize;
-
-		const ChunkedScratchBufferAlloc sba = alloc(size);
-
-		const uint32_t offset0 = sba.offset;
-		const uint32_t offset1 = offset0 + vsSize;
-
-		const Chunk& sbc = m_chunks[sba.chunkIdx];
-
-		_outSbo.buffer = sbc.buffer;
-		_outSbo.offsets[0] = offset0;
-		_outSbo.offsets[1] = offset1;
-
-		if (NULL != _vsData)
-		{
-			bx::memCopy(&sbc.data[offset0], _vsData, _vsSize);
-		}
-
-		if (NULL != _fsData)
-		{
-			bx::memCopy(&sbc.data[offset1], _fsData, _fsSize);
-		}
-	}
-
-	void ChunkedScratchBufferVK::begin()
-	{
-		BX_ASSERT(0 == m_chunkPos, "");
-		const uint32_t numConsumed = m_consume[s_renderVK->m_cmd.m_currentFrameInFlight];
-		m_chunkControl.consume(numConsumed);
-	}
-
-	void ChunkedScratchBufferVK::end()
-	{
-		uint32_t numFlush = m_chunkControl.getNumReserved();
-
-		if (0 != m_chunkPos)
-		{
-retry:
-			const uint32_t remainder = m_chunkSize - m_chunkPos;
-			const uint32_t rem = m_chunkControl.reserve(remainder, true);
-
-			if (rem != remainder)
-			{
-				const uint32_t chunkIdx = m_chunkControl.m_write/m_chunkSize;
-				addChunk(chunkIdx + 1);
-				goto retry;
-			}
-
-			m_chunkPos = 0;
-		}
-
 		const VkPhysicalDeviceLimits& deviceLimits = s_renderVK->m_deviceProperties.limits;
 		const uint32_t align = uint32_t(deviceLimits.nonCoherentAtomSize);
 
-		VkDevice device = s_renderVK->m_device;
+		VkMappedMemoryRange range;
+		range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+		range.pNext  = NULL;
+		range.memory = _chunk.deviceMem.mem;
+		range.offset = _chunk.deviceMem.offset;
+		range.size   = bx::alignUp(_size, align);
+		VK_CHECK(vkFlushMappedMemoryRanges(s_renderVK->m_device, 1, &range) );
+	}
 
-		const uint32_t numReserved = m_chunkControl.getNumReserved();
-		BX_ASSERT(0 == numReserved % m_chunkSize, "Number of reserved must always be aligned to chunk size!");
-
-		const uint32_t first = m_chunkControl.m_current / m_chunkSize;
-
-		for (uint32_t ii = first, end = numReserved / m_chunkSize + first; ii < end; ++ii)
-		{
-			const Chunk& chunk = m_chunks[ii % m_chunks.size()];
-
-			VkMappedMemoryRange range;
-			range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-			range.pNext  = NULL;
-			range.memory = chunk.deviceMem.mem;
-			range.offset = chunk.deviceMem.offset;
-			range.size   = bx::alignUp(bx::min(numFlush, m_chunkSize), align);
-			VK_CHECK(vkFlushMappedMemoryRanges(device, 1, &range) );
-
-			m_chunkControl.commit(m_chunkSize);
-			numFlush -= m_chunkSize;
-		}
-
-		m_consume[s_renderVK->m_cmd.m_currentFrameInFlight] = numReserved;
-
-		m_totalUsed = m_chunkControl.getNumUsed();
+	uint32_t ChunkedScratchBufferVK::currentFrameInFlight() const
+	{
+		return s_renderVK->m_cmd.m_currentFrameInFlight;
 	}
 
 	void BufferVK::create(VkCommandBuffer _commandBuffer, uint32_t _size, void* _data, uint16_t _flags, bool _vertex, uint32_t _stride)
@@ -6275,7 +6204,7 @@ retry:
 		return mipWidth * bpp / 8;
 	}
 
-	void ReadbackVK::copyImageToBuffer(VkCommandBuffer _commandBuffer, VkBuffer _buffer, VkImageLayout _layout, VkImageAspectFlags _aspect, uint8_t _mip) const
+	void ReadbackVK::copyImageToBuffer(VkCommandBuffer _commandBuffer, VkBuffer _buffer, VkImageLayout _layout, VkImageAspectFlags _aspect, uint16_t _layer, uint8_t _mip) const
 	{
 		BGFX_PROFILER_SCOPE("ReadbackVK::copyImageToBuffer", kColorFrame);
 
@@ -6290,7 +6219,7 @@ retry:
 			, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 			, _mip
 			, 1
-			, 0
+			, _layer
 			, 1
 			);
 
@@ -6300,7 +6229,7 @@ retry:
 		bic.bufferImageHeight = mipHeight;
 		bic.imageSubresource.aspectMask     = _aspect;
 		bic.imageSubresource.mipLevel       = _mip;
-		bic.imageSubresource.baseArrayLayer = 0;
+		bic.imageSubresource.baseArrayLayer = _layer;
 		bic.imageSubresource.layerCount     = 1;
 		bic.imageOffset = { 0, 0, 0 };
 		bic.imageExtent = { mipWidth, mipHeight, 1 };
@@ -6329,7 +6258,7 @@ retry:
 			, _layout
 			, _mip
 			, 1
-			, 0
+			, _layer
 			, 1
 			);
 	}
@@ -6450,6 +6379,18 @@ retry:
 			;
 		ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
 
+		const bool needResolve = true
+			&& 1  < m_sampler.Count
+			&& 0 != (ici.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+			&& 0 == (m_flags & BGFX_TEXTURE_MSAA_SAMPLE)
+			&& 0 == (m_flags & BGFX_TEXTURE_RT_WRITE_ONLY)
+			;
+
+		ici.mipLevels = needResolve
+			? 1
+			: ici.mipLevels
+			;
+
 		if (0 != _external)
 		{
 			static_assert(sizeof(m_textureImage) == sizeof(_external), "Size must match!");
@@ -6491,19 +6432,13 @@ retry:
 			: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			;
 
-		const bool needResolve = true
-			&& 1 < m_sampler.Count
-			&& 0 != (ici.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
-			&& 0 == (m_flags & BGFX_TEXTURE_MSAA_SAMPLE)
-			&& 0 == (m_flags & BGFX_TEXTURE_RT_WRITE_ONLY)
-			;
-
 		if (needResolve)
 		{
 			VkImageCreateInfo ici_resolve = ici;
-			ici_resolve.samples = s_msaa[0].Sample;
-			ici_resolve.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-			ici_resolve.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+			ici_resolve.samples   = s_msaa[0].Sample;
+			ici_resolve.mipLevels = m_numMips;
+			ici_resolve.usage    &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			ici_resolve.flags    &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
 			result = vkCreateImage(device, &ici_resolve, allocatorCb, &m_singleMsaaImage);
 			if (VK_SUCCESS != result)
@@ -6873,21 +6808,43 @@ retry:
 
 		const uint32_t bpp = bimg::getBitsPerPixel(bimg::TextureFormat::Enum(m_textureFormat) );
 		const bimg::ImageBlockInfo& blockInfo = bimg::getBlockInfo(bimg::TextureFormat::Enum(m_textureFormat) );
-		uint32_t rectpitch = _rect.m_width * bpp / 8;
-		uint32_t slicepitch = rectpitch * _rect.m_height;
-		uint32_t align = blockInfo.blockSize;
-		if (bimg::isCompressed(bimg::TextureFormat::Enum(m_textureFormat) ) )
+		const bool compressed = bimg::isCompressed(bimg::TextureFormat::Enum(m_textureFormat) );
+		const bool convert    = m_textureFormat != m_requestedFormat;
+
+		uint32_t rectPitch  = _rect.m_width * bpp / 8;
+		uint32_t slicePitch = rectPitch * _rect.m_height;
+		uint32_t numRows    = _rect.m_height;
+		uint32_t align      = blockInfo.blockSize;
+		if (compressed)
 		{
-			rectpitch  = (_rect.m_width  / blockInfo.blockWidth ) * blockInfo.blockSize;
-			slicepitch = (_rect.m_height / blockInfo.blockHeight) * rectpitch;
+			const uint32_t numBlocksX = (_rect.m_width  + blockInfo.blockWidth  - 1) / blockInfo.blockWidth;
+			const uint32_t numBlocksY = (_rect.m_height + blockInfo.blockHeight - 1) / blockInfo.blockHeight;
+			rectPitch  = numBlocksX * blockInfo.blockSize;
+			slicePitch = numBlocksY * rectPitch;
+			numRows    = numBlocksY;
 		}
-		const uint32_t srcpitch = UINT16_MAX == _pitch ? rectpitch : _pitch;
-		const uint32_t size     = UINT16_MAX == _pitch ? slicepitch  * _depth: _rect.m_height * _pitch * _depth;
-		const bool convert = m_textureFormat != m_requestedFormat;
+
+		const uint32_t srcPitch = UINT16_MAX == _pitch ? rectPitch : _pitch;
+		const uint32_t size = convert || UINT16_MAX == _pitch
+			? slicePitch * _depth
+			: numRows * srcPitch * _depth
+			;
+
+		// bufferRowLength is expressed in texels and, for block-compressed
+		// formats, must be a multiple of the block width.
+		uint32_t bufferRowLength = 0;
+		if (!convert
+		&&  UINT16_MAX != _pitch)
+		{
+			bufferRowLength = compressed
+				? (srcPitch / blockInfo.blockSize) * blockInfo.blockWidth
+				: srcPitch * 8 / bpp
+				;
+		}
 
 		VkBufferImageCopy region;
 		region.bufferOffset      = 0;
-		region.bufferRowLength   = (_pitch == UINT16_MAX ? 0 : _pitch * 8 / bpp);
+		region.bufferRowLength   = bufferRowLength;
 		region.bufferImageHeight = 0;
 		region.imageSubresource.aspectMask     = m_aspectFlags;
 		region.imageSubresource.mipLevel       = _mip;
@@ -6901,16 +6858,12 @@ retry:
 
 		if (convert)
 		{
-			temp = (uint8_t*)bx::alloc(g_allocator, slicepitch);
-			bimg::imageDecodeToBgra8(g_allocator, temp, data, _rect.m_width, _rect.m_height, srcpitch, bimg::TextureFormat::Enum(m_requestedFormat) );
+			temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
+			bimg::imageDecodeToBgra8(g_allocator, temp, data, _rect.m_width, _rect.m_height, rectPitch, bimg::TextureFormat::Enum(m_requestedFormat) );
 			data = temp;
 
-			region.imageExtent =
-			{
-				bx::max(1u, m_width  >> _mip),
-				bx::max(1u, m_height >> _mip),
-				_depth,
-			};
+			region.imageExtent.width  = bx::clamp<uint32_t>(region.imageExtent.width,  0u, bx::max(1u, m_width  >> _mip) - _rect.m_x);
+			region.imageExtent.height = bx::clamp<uint32_t>(region.imageExtent.height, 0u, bx::max(1u, m_height >> _mip) - _rect.m_y);
 		}
 
 		StagingBufferVK stagingBuffer = s_renderVK->allocFromScratchStagingBuffer(size, align, data);
@@ -7397,7 +7350,10 @@ retry:
 		m_lastImageAcquiredSemaphore = VK_NULL_HANDLE;
 
 		const uint64_t recreateSurfaceMask     = BGFX_RESET_HIDPI;
-		const uint64_t recreateSwapchainMask   = BGFX_RESET_VSYNC | BGFX_RESET_SRGB_BACKBUFFER;
+		const uint64_t recreateSwapchainMask   = 0
+			| BGFX_RESET_SRGB_BACKBUFFER
+			| (s_renderVK->m_swapchainMaintenance1Supported ? BGFX_RESET_NONE : BGFX_RESET_VSYNC)
+			;
 		const uint64_t recreateAttachmentsMask = BGFX_RESET_MSAA_MASK;
 
 		const bool recreateSurface = false
@@ -7774,14 +7730,22 @@ retry:
 		m_supportsReadback      = 0 != (imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 		m_supportsManualResolve = 0 != (imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 
+		m_presentModeWithVSyncIdx    = findPresentMode(true);
+		m_presentModeWithoutVSyncIdx = findPresentMode(false);
+
 		const bool vsync = !!(m_resolution.reset & BGFX_RESET_VSYNC);
-		uint32_t presentModeIdx = findPresentMode(vsync);
+		const uint32_t presentModeIdx = vsync
+			? m_presentModeWithVSyncIdx
+			: m_presentModeWithoutVSyncIdx
+			;
+
 		if (UINT32_MAX == presentModeIdx)
 		{
 			BX_TRACE("Create swapchain error: Unable to find present mode (vsync: %d).", vsync);
 			return VK_ERROR_INITIALIZATION_FAILED;
 		}
 
+		m_sci.pNext              = NULL;
 		m_sci.surface            = m_surface;
 		m_sci.minImageCount      = swapBufferCount;
 		m_sci.imageFormat        = surfaceFormat;
@@ -7792,6 +7756,26 @@ retry:
 		m_sci.compositeAlpha     = compositeAlpha;
 		m_sci.presentMode        = s_presentMode[presentModeIdx].mode;
 		m_sci.clipped            = VK_FALSE;
+
+		VkPresentModeKHR modes[2];
+		VkSwapchainPresentModesCreateInfoEXT modesInfo;
+
+		if (UINT32_MAX == m_presentModeWithVSyncIdx
+		||  UINT32_MAX == m_presentModeWithoutVSyncIdx)
+		{
+			s_renderVK->m_swapchainMaintenance1Supported = false;
+		}
+		else if (s_renderVK->m_swapchainMaintenance1Supported)
+		{
+			modes[0] = s_presentMode[m_presentModeWithVSyncIdx].mode;
+			modes[1] = s_presentMode[m_presentModeWithoutVSyncIdx].mode;
+			modesInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT;
+			modesInfo.presentModeCount = 2;
+			modesInfo.pPresentModes = modes;
+			modesInfo.pNext = m_sci.pNext;
+
+			m_sci.pNext = &modesInfo;
+		}
 
 		result = vkCreateSwapchainKHR(device, &m_sci, allocatorCb, &m_swapChain);
 		if (VK_SUCCESS != result)
@@ -8256,6 +8240,23 @@ retry:
 			pi.pSwapchains        = &m_swapChain;
 			pi.pImageIndices      = &m_backBufferColorIdx;
 			pi.pResults           = NULL;
+
+			VkSwapchainPresentModeInfoEXT presentModeInfo;
+			if (s_renderVK->m_swapchainMaintenance1Supported)
+			{
+				const uint32_t presentModeIdx = !!(m_resolution.reset & BGFX_RESET_VSYNC)
+					? m_presentModeWithVSyncIdx
+					: m_presentModeWithoutVSyncIdx;
+					;
+
+				presentModeInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT;
+				presentModeInfo.swapchainCount = 1;
+				presentModeInfo.pPresentModes = &s_presentMode[presentModeIdx].mode;
+				presentModeInfo.pNext = pi.pNext;
+
+				pi.pNext = &presentModeInfo;
+			}
+
 			VkResult result;
 			{
 				BGFX_PROFILER_SCOPE("vkQueuePresentHKR", kColorFrame);
@@ -9203,6 +9204,7 @@ retry:
 					if (beginRenderPass && (false
 					||  _render->m_view[view].m_fbh.idx != fbh.idx
 					|| !_render->m_view[view].m_rect.isEqual(viewState.m_rect)
+					||  profiler.m_enabled
 					   ) )
 					{
 						vkCmdEndRenderPass(m_commandBuffer);
@@ -9643,6 +9645,7 @@ retry:
 
 					const VkPipeline pipeline =
 						getPipeline(draw.m_stateFlags
+							, draw.m_rgba
 							, draw.m_stencil
 							, numStreams
 							, layouts

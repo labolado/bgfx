@@ -13,6 +13,8 @@
 #include <metal-cpp/metal.hpp>
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "renderer.h"
+
 #define BGFX_MTL_PROFILER_BEGIN(_view, _abgr)         \
 	BX_MACRO_BLOCK_BEGIN                              \
 		BGFX_PROFILER_BEGIN(s_viewName[view], _abgr); \
@@ -245,57 +247,6 @@ namespace bgfx { namespace mtl
 
 	// end of c++ wrapper
 
-	template <typename Ty>
-	class StateCacheT
-	{
-	public:
-		void add(uint64_t _id, Ty _item)
-		{
-			invalidate(_id);
-			m_hashMap.insert(stl::make_pair(_id, _item) );
-		}
-
-		Ty find(uint64_t _id)
-		{
-			typename HashMap::iterator it = m_hashMap.find(_id);
-			if (it != m_hashMap.end() )
-			{
-				return it->second;
-			}
-
-			return NULL;
-		}
-
-		void invalidate(uint64_t _id)
-		{
-			typename HashMap::iterator it = m_hashMap.find(_id);
-			if (it != m_hashMap.end() )
-			{
-				release(it->second);
-				m_hashMap.erase(it);
-			}
-		}
-
-		void invalidate()
-		{
-			for (typename HashMap::iterator it = m_hashMap.begin(), itEnd = m_hashMap.end(); it != itEnd; ++it)
-			{
-				release(it->second);
-			}
-
-			m_hashMap.clear();
-		}
-
-		uint32_t getCount() const
-		{
-			return uint32_t(m_hashMap.size() );
-		}
-
-	private:
-		typedef stl::unordered_map<uint64_t, Ty> HashMap;
-		HashMap m_hashMap;
-	};
-
 	struct BufferMtl
 	{
 		BufferMtl()
@@ -500,14 +451,20 @@ namespace bgfx { namespace mtl
 			, bool _fragment
 			, uint32_t _flags = BGFX_SAMPLER_INTERNAL_DEFAULT
 			, uint8_t _mip = UINT8_MAX
+			, uint16_t _firstLayer = 0
+			, uint16_t _numLayers = UINT16_MAX
+			, uint8_t _firstMip = 0
+			, uint8_t _numMips = UINT8_MAX
 			);
 
 		MTL::Texture* getTextureMipLevel(uint8_t _mip);
+		MTL::Texture* getTextureView(uint16_t _firstLayer, uint16_t _numLayers, uint8_t _firstMip, uint8_t _numMips);
 
 		MTL::Texture* m_ptr;
 		MTL::Texture* m_ptrMsaa;
 		MTL::Texture* m_ptrStencil; // for emulating packed depth/stencil formats - only for iOS8...
 		MTL::Texture* m_ptrMips[14];
+		stl::unordered_map<uint64_t, MTL::Texture*> m_ptrViews;
 		MTL::SamplerState* m_sampler;
 		uint64_t m_flags;
 		uint32_t m_width;
@@ -610,10 +567,11 @@ namespace bgfx { namespace mtl
 			, m_activeCommandBuffer(NULL)
 			, m_releaseWriteIndex(0)
 			, m_releaseReadIndex(0)
+			, m_maxFrameLatency(BGFX_CONFIG_MAX_FRAME_LATENCY)
 		{
 		}
 
-		void init(MTL::Device* _device);
+		void init(MTL::Device* _device, uint32_t _maxFrameLatency);
 		void shutdown();
 		MTL::CommandBuffer* alloc();
 		void kick(bool _endFrame, bool _waitForFinish);
@@ -632,6 +590,7 @@ namespace bgfx { namespace mtl
 
 		int m_releaseWriteIndex;
 		int m_releaseReadIndex;
+		uint32_t m_maxFrameLatency;
 		typedef stl::vector<NS::Object*> ResourceArray;
 		ResourceArray m_release[BGFX_CONFIG_MAX_FRAME_LATENCY];
 	};
@@ -701,6 +660,23 @@ namespace bgfx { namespace mtl
 	};
 
 } /* namespace metal */ } // namespace bgfx
+
+namespace bgfx
+{
+	template<typename Ty>
+	struct StateCacheFuncT<Ty*>
+	{
+		static void evict(Ty* _ptr)
+		{
+			mtl::release(_ptr);
+		}
+
+		static void validate(Ty* /*_ptr*/, uint64_t /*_key*/)
+		{
+		}
+	};
+
+} // namespace bgfx
 
 #endif // BGFX_CONFIG_RENDERER_METAL
 

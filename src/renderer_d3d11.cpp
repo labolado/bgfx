@@ -1900,11 +1900,12 @@ namespace bgfx { namespace d3d11
 			m_textures[_handle.idx].update(_side, _mip, _rect, _z, _depth, _pitch, _mem);
 		}
 
-		void readTexture(TextureHandle _handle, void* _data, uint8_t _mip) override
+		void readTexture(TextureHandle _handle, void* _data, uint16_t _layer, uint8_t _mip) override
 		{
 			const TextureD3D11& texture = m_textures[_handle.idx];
+			const uint32_t subresource = _mip + _layer*texture.m_numMips;
 			D3D11_MAPPED_SUBRESOURCE mapped;
-			DX_CHECK(m_deviceCtx->Map(texture.m_ptr, _mip, D3D11_MAP_READ, 0, &mapped) );
+			DX_CHECK(m_deviceCtx->Map(texture.m_ptr, subresource, D3D11_MAP_READ, 0, &mapped) );
 
 			uint32_t srcWidth  = bx::max(1, texture.m_width >>_mip);
 			uint32_t srcHeight = bx::max(1, texture.m_height>>_mip);
@@ -1919,7 +1920,7 @@ namespace bgfx { namespace d3d11
 
 			bx::memCopy(dst, dstPitch, src, srcPitch, pitch, srcHeight);
 
-			m_deviceCtx->Unmap(texture.m_ptr, _mip);
+			m_deviceCtx->Unmap(texture.m_ptr, subresource);
 		}
 
 		void resizeTexture(TextureHandle _handle, uint16_t _width, uint16_t _height, uint8_t _numMips, uint16_t _numLayers) override
@@ -2533,10 +2534,16 @@ namespace bgfx { namespace d3d11
 				m_rasterizerStateCache.invalidate();
 			}
 
+			if (_resolution.reset & BGFX_RESET_VSYNC)
+				m_resolution.reset |= BGFX_RESET_VSYNC;
+			else
+				m_resolution.reset &= ~BGFX_RESET_VSYNC;
+
 			const uint32_t maskFlags = ~(0
 				| BGFX_RESET_MAXANISOTROPY
 				| BGFX_RESET_DEPTH_CLAMP
 				| BGFX_RESET_SUSPEND
+				| BGFX_RESET_VSYNC
 				);
 
 			if (m_resolution.width              != _resolution.width
@@ -3299,12 +3306,20 @@ namespace bgfx { namespace d3d11
 			return uav;
 		}
 
-		ID3D11ShaderResourceView* getCachedSrv(TextureHandle _handle, uint8_t _mip, bool _compute = false, bool _stencil = false)
+		ID3D11ShaderResourceView* getCachedSrv(TextureHandle _handle, uint8_t _firstMip, uint8_t _numMips = 1, uint16_t _firstLayer = 0, uint16_t _numLayers = UINT16_MAX, bool _compute = false, bool _stencil = false)
 		{
+			const TextureD3D11& texture = m_textures[_handle.idx];
+
+			const uint8_t  numMips   = bx::min<uint8_t>(_numMips,   uint8_t(texture.m_numMips - _firstMip) );
+			const uint16_t numLayers = bx::min<uint16_t>(_numLayers, uint16_t(texture.m_numLayers - _firstLayer) );
+
 			bx::HashMurmur2A murmur;
 			murmur.begin();
 			murmur.add(_handle);
-			murmur.add(_mip);
+			murmur.add(_firstMip);
+			murmur.add(numMips);
+			murmur.add(_firstLayer);
+			murmur.add(numLayers);
 			murmur.add(0);
 			murmur.add(_compute);
 			murmur.add(_stencil);
@@ -3314,13 +3329,16 @@ namespace bgfx { namespace d3d11
 			ID3D11ShaderResourceView* srv;
 			if (NULL == ptr)
 			{
-				const TextureD3D11& texture = m_textures[_handle.idx];
 				const uint32_t msaaQuality = bx::satSub<uint32_t>(uint32_t( (texture.m_flags&BGFX_TEXTURE_RT_MSAA_MASK) >> BGFX_TEXTURE_RT_MSAA_SHIFT ), 1u);
 				const DXGI_SAMPLE_DESC& msaa = s_msaa[msaaQuality];
 				const bool msaaSample = 1 < msaa.Count && 0 != (texture.m_flags&BGFX_TEXTURE_MSAA_SAMPLE);
 
 				D3D11_SHADER_RESOURCE_VIEW_DESC desc;
-				desc.Format = _stencil ? DXGI_FORMAT_X24_TYPELESS_G8_UINT : texture.getSrvFormat();
+				desc.Format = _stencil
+					? DXGI_FORMAT_X24_TYPELESS_G8_UINT
+					: texture.getSrvFormat()
+					;
+
 				switch (texture.m_type)
 				{
 				case TextureD3D11::Texture2D:
@@ -3330,10 +3348,10 @@ namespace bgfx { namespace d3d11
 							? D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY
 							: D3D11_SRV_DIMENSION_TEXTURE2DARRAY
 							;
-						desc.Texture2DArray.MostDetailedMip = _mip;
-						desc.Texture2DArray.MipLevels       = 1;
-						desc.Texture2DArray.FirstArraySlice = 0;
-						desc.Texture2DArray.ArraySize       = texture.m_numLayers;
+						desc.Texture2DArray.MostDetailedMip = _firstMip;
+						desc.Texture2DArray.MipLevels       = numMips;
+						desc.Texture2DArray.FirstArraySlice = _firstLayer;
+						desc.Texture2DArray.ArraySize       = numLayers;
 					}
 					else
 					{
@@ -3341,20 +3359,21 @@ namespace bgfx { namespace d3d11
 							? D3D11_SRV_DIMENSION_TEXTURE2DMS
 							: D3D11_SRV_DIMENSION_TEXTURE2D
 							;
-						desc.Texture2D.MostDetailedMip = _mip;
-						desc.Texture2D.MipLevels       = 1;
+						desc.Texture2D.MostDetailedMip = _firstMip;
+						desc.Texture2D.MipLevels       = numMips;
 					}
 					break;
 
 				case TextureD3D11::TextureCube:
 					desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-					desc.TextureCube.MostDetailedMip = _mip;
-					desc.TextureCube.MipLevels       = 1;
+					desc.TextureCube.MostDetailedMip = _firstMip;
+					desc.TextureCube.MipLevels       = numMips;
 					break;
+
 				case TextureD3D11::Texture3D:
 					desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
-					desc.Texture3D.MostDetailedMip = _mip;
-					desc.Texture3D.MipLevels       = 1;
+					desc.Texture3D.MostDetailedMip = _firstMip;
+					desc.Texture3D.MipLevels       = numMips;
 					break;
 				}
 
@@ -3703,11 +3722,11 @@ namespace bgfx { namespace d3d11
 		Matrix4 m_predefinedUniforms[PredefinedUniform::Count];
 		UniformRegistry m_uniformReg;
 
-		StateCacheT<ID3D11BlendState> m_blendStateCache;
-		StateCacheT<ID3D11DepthStencilState> m_depthStencilStateCache;
-		StateCacheT<ID3D11InputLayout> m_inputLayoutCache;
-		StateCacheT<ID3D11RasterizerState> m_rasterizerStateCache;
-		StateCacheT<ID3D11SamplerState> m_samplerStateCache;
+		StateCacheT<ID3D11BlendState*> m_blendStateCache;
+		StateCacheT<ID3D11DepthStencilState*> m_depthStencilStateCache;
+		StateCacheT<ID3D11InputLayout*> m_inputLayoutCache;
+		StateCacheT<ID3D11RasterizerState*> m_rasterizerStateCache;
+		StateCacheT<ID3D11SamplerState*> m_samplerStateCache;
 		StateCacheLru<IUnknown*, 1024> m_srvUavLru;
 
 		TextVideoMem m_textVideoMem;
@@ -4598,9 +4617,13 @@ namespace bgfx { namespace d3d11
 
 					if (needResolve)
 					{
+						const uint32_t savedMipLevels = desc.MipLevels;
+						desc.MipLevels = 1;
 						DX_CHECK(s_renderD3D11->m_device->CreateTexture2D(&desc, NULL, &m_rt2d) );
+
 						desc.BindFlags &= ~(D3D11_BIND_RENDER_TARGET|D3D11_BIND_DEPTH_STENCIL);
 						desc.SampleDesc = s_msaa[0];
+						desc.MipLevels  = savedMipLevels;
 					}
 
 					if (!external)
@@ -4784,28 +4807,57 @@ namespace bgfx { namespace d3d11
 		const uint16_t bpp    = blockInfo.bitsPerPixel;
 		const uint32_t subres = _mip + ( (layer + _side) * m_numMips);
 		const bool     depth  = bimg::isDepth(bimg::TextureFormat::Enum(m_textureFormat) );
-		uint32_t rectpitch  = _rect.m_width*bpp/8;
+		uint32_t rectPitch  = _rect.m_width*bpp/8;
 		if (bimg::isCompressed(bimg::TextureFormat::Enum(m_textureFormat) ) )
 		{
-			rectpitch = (_rect.m_width / blockInfo.blockWidth)*blockInfo.blockSize;
+			rectPitch = (_rect.m_width / blockInfo.blockWidth)*blockInfo.blockSize;
 		}
 
-		const uint32_t srcpitch   = UINT16_MAX == _pitch ? rectpitch : _pitch;
-		const uint32_t slicepitch = rectpitch*_rect.m_height;
+		const uint32_t srcPitch   = UINT16_MAX == _pitch ? rectPitch : _pitch;
+		const uint32_t slicePitch = rectPitch*_rect.m_height;
 
 		const bool convert = m_textureFormat != m_requestedFormat;
+
+		uint32_t copyPitch = srcPitch;
 
 		uint8_t* data = _mem->data;
 		uint8_t* temp = NULL;
 
 		if (convert)
 		{
-			temp = (uint8_t*)bx::alloc(g_allocator, slicepitch);
-			bimg::imageDecodeToBgra8(g_allocator, temp, data, _rect.m_width, _rect.m_height, srcpitch, bimg::TextureFormat::Enum(m_requestedFormat) );
+			copyPitch = rectPitch;
+			temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
+			bimg::imageDecodeToBgra8(g_allocator, temp, data, _rect.m_width, _rect.m_height, copyPitch, bimg::TextureFormat::Enum(m_requestedFormat) );
 			data = temp;
 
-			box.right  = bx::max(1u, m_width  >> _mip);
-			box.bottom = bx::max(1u, m_height >> _mip);
+			box.right  = bx::clamp<uint32_t>(box.right,  box.left, bx::max(1u, m_width  >> _mip) );
+			box.bottom = bx::clamp<uint32_t>(box.bottom, box.top,  bx::max(1u, m_height >> _mip) );
+		}
+		else
+		{
+			switch (m_textureFormat)
+			{
+			case TextureFormat::R5G6B5:
+				temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
+				bimg::imageConvert(temp, 16, bx::packB5G6R5, data, bx::unpackR5G6B5, slicePitch);
+				data = temp;
+				break;
+
+			case TextureFormat::RGBA4:
+				temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
+				bimg::imageConvert(temp, 16, bx::packBgra4, data, bx::unpackRgba4, slicePitch);
+				data = temp;
+				break;
+
+			case TextureFormat::RGB5A1:
+				temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
+				bimg::imageConvert(temp, 16, bx::packBgr5a1, data, bx::unpackRgb5a1, slicePitch);
+				data = temp;
+				break;
+
+			default:
+				break;
+			}
 		}
 
 		deviceCtx->UpdateSubresource(
@@ -4813,8 +4865,8 @@ namespace bgfx { namespace d3d11
 			, subres
 			, depth ? NULL : &box
 			, data
-			, srcpitch
-			, TextureD3D11::Texture3D == m_type ? slicepitch : 0
+			, copyPitch
+			, TextureD3D11::Texture3D == m_type ? slicePitch : 0
 			);
 
 		if (NULL != temp)
@@ -4823,17 +4875,39 @@ namespace bgfx { namespace d3d11
 		}
 	}
 
-	void TextureD3D11::commit(uint8_t _stage, uint32_t _flags, const float _palette[][4])
+	void TextureD3D11::commit(uint8_t _stage, uint32_t _flags, const float _palette[][4], uint16_t _firstLayer, uint16_t _numLayers, uint8_t _firstMip, uint8_t _numMips)
 	{
 		TextureStage& ts = s_renderD3D11->m_textureStage;
+
+		const uint8_t  numMips   = bx::min<uint8_t>(_numMips,   uint8_t(m_numMips   - _firstMip) );
+		const uint16_t numLayers = bx::min<uint16_t>(_numLayers, uint16_t(m_numLayers - _firstLayer) );
+
+		const bool fullRange = 0 == _firstMip
+			&& 0 == _firstLayer
+			&& numMips   == m_numMips
+			&& numLayers == m_numLayers
+			;
 
 		if (0 != (_flags & BGFX_SAMPLER_SAMPLE_STENCIL) )
 		{
 			ts.m_srv[_stage] = s_renderD3D11->getCachedSrv(
 				  TextureHandle{ uint16_t(this - s_renderD3D11->m_textures) }
 				, 0
+				, 1
+				, 0
+				, UINT16_MAX
 				, false
 				, true
+				);
+		}
+		else if (!fullRange)
+		{
+			ts.m_srv[_stage] = s_renderD3D11->getCachedSrv(
+				  TextureHandle{ uint16_t(this - s_renderD3D11->m_textures) }
+				, _firstMip
+				, numMips
+				, _firstLayer
+				, numLayers
 				);
 		}
 		else
@@ -5586,6 +5660,7 @@ namespace bgfx { namespace d3d11
 		}
 
 		updateNativeWindow();
+
 		if (updateResolution(_render->m_resolution) )
 		{
 			return;
@@ -5829,14 +5904,16 @@ namespace bgfx { namespace d3d11
 									TextureD3D11& texture = m_textures[bind.m_idx];
 									if (Access::Read != bind.m_access)
 									{
-										uav[stage] = 0 == bind.m_mip
+										uav[stage] = 0 == bind.m_firstMip
 											? texture.m_uav
-											: s_renderD3D11->getCachedUav(texture.getHandle(), bind.m_mip)
+											: s_renderD3D11->getCachedUav(texture.getHandle(), bind.m_firstMip)
 											;
+										m_textureStage.m_srv[stage]     = NULL;
+										m_textureStage.m_sampler[stage] = NULL;
 									}
 									else
 									{
-										m_textureStage.m_srv[stage]     = s_renderD3D11->getCachedSrv(texture.getHandle(), bind.m_mip, true);
+										m_textureStage.m_srv[stage]     = s_renderD3D11->getCachedSrv(texture.getHandle(), bind.m_firstMip, 1, 0, UINT16_MAX, true);
 										m_textureStage.m_sampler[stage] = s_renderD3D11->getSamplerState(uint32_t(texture.m_flags), NULL);
 									}
 								}
@@ -5845,7 +5922,7 @@ namespace bgfx { namespace d3d11
 							case Binding::Texture:
 								{
 									TextureD3D11& texture = m_textures[bind.m_idx];
-									texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette);
+									texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstLayer, bind.m_numLayers, bind.m_firstMip, bind.m_numMips);
 								}
 								break;
 
@@ -5859,6 +5936,8 @@ namespace bgfx { namespace d3d11
 									if (Access::Read != bind.m_access)
 									{
 										uav[stage] = buffer.m_uav;
+										m_textureStage.m_srv[stage]     = NULL;
+										m_textureStage.m_sampler[stage] = NULL;
 									}
 									else
 									{
@@ -5972,7 +6051,7 @@ namespace bgfx { namespace d3d11
 
 					currentBind.clear();
 
-					setBlendState(newFlags);
+					setBlendState(newFlags, draw.m_rgba);
 					setDepthStencilState(newFlags, packStencil(BGFX_STENCIL_DEFAULT, BGFX_STENCIL_DEFAULT) );
 
 					const uint64_t pt = newFlags&BGFX_STATE_PT_MASK;
@@ -6149,6 +6228,10 @@ namespace bgfx { namespace d3d11
 						if (current.m_idx          != bind.m_idx
 						||  current.m_type         != bind.m_type
 						||  current.m_samplerFlags != bind.m_samplerFlags
+						||  current.m_firstLayer   != bind.m_firstLayer
+						||  current.m_numLayers    != bind.m_numLayers
+						||  current.m_firstMip     != bind.m_firstMip
+						||  current.m_numMips      != bind.m_numMips
 						||  programChanged)
 						{
 							if (kInvalidHandle != bind.m_idx)
@@ -6160,14 +6243,14 @@ namespace bgfx { namespace d3d11
 										TextureD3D11& texture = m_textures[bind.m_idx];
 										if (Access::Read != bind.m_access)
 										{
-											m_textureStage.m_uav[stage] = 0 == bind.m_mip
+											m_textureStage.m_uav[stage] = 0 == bind.m_firstMip
 												? texture.m_uav
-												: s_renderD3D11->getCachedUav(texture.getHandle(), bind.m_mip)
+												: s_renderD3D11->getCachedUav(texture.getHandle(), bind.m_firstMip)
 												;
 										}
 										else
 										{
-											m_textureStage.m_srv[stage]     = s_renderD3D11->getCachedSrv(texture.getHandle(), bind.m_mip, true);
+											m_textureStage.m_srv[stage]     = s_renderD3D11->getCachedSrv(texture.getHandle(), bind.m_firstMip, 1, 0, UINT16_MAX, true);
 											m_textureStage.m_sampler[stage] = s_renderD3D11->getSamplerState(uint32_t(texture.m_flags), NULL);
 										}
 									}
@@ -6176,7 +6259,7 @@ namespace bgfx { namespace d3d11
 								case Binding::Texture:
 									{
 										TextureD3D11& texture = m_textures[bind.m_idx];
-										texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette);
+										texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstLayer, bind.m_numLayers, bind.m_firstMip, bind.m_numMips);
 									}
 									break;
 

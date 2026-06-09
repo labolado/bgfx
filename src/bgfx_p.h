@@ -1799,12 +1799,93 @@ namespace bgfx
 			Count
 		};
 
+		void reset()
+		{
+			m_samplerFlags = BGFX_SAMPLER_NONE;
+			m_firstLayer   = 0;
+			m_numLayers    = UINT16_MAX;
+			m_idx          = kInvalidHandle;
+			m_type     = 0;
+			m_format   = 0;
+			m_access   = 0;
+			m_firstMip = 0;
+			m_numMips  = UINT8_MAX;
+		}
+
+		void setTexture(TextureHandle _handle, uint32_t _samplerFlags, uint8_t _firstMip = 0, uint8_t _numMips = UINT8_MAX)
+		{
+			m_samplerFlags = _samplerFlags;
+			m_firstLayer   = 0;
+			m_numLayers    = UINT16_MAX;
+			m_idx      = _handle.idx;
+			m_type     = uint8_t(Binding::Texture);
+			m_format   = 0;
+			m_access   = 0;
+			m_firstMip = _firstMip;
+			m_numMips  = _numMips;
+		}
+
+		void setTexture(TextureHandle _handle, uint16_t _firstLayer, uint16_t _numLayers, uint8_t _firstMip, uint8_t _numMips, uint32_t _samplerFlags)
+		{
+			m_samplerFlags = _samplerFlags;
+			m_firstLayer   = _firstLayer;
+			m_numLayers    = _numLayers;
+			m_idx      = _handle.idx;
+			m_type     = uint8_t(Binding::Texture);
+			m_format   = 0;
+			m_access   = 0;
+			m_firstMip = _firstMip;
+			m_numMips  = _numMips;
+		}
+
+		void setIndexBuffer(IndexBufferHandle _handle, Access::Enum _access)
+		{
+			m_samplerFlags = BGFX_SAMPLER_NONE;
+			m_firstLayer   = 0;
+			m_numLayers    = UINT16_MAX;
+			m_idx      = _handle.idx;
+			m_type     = uint8_t(Binding::IndexBuffer);
+			m_format   = 0;
+			m_access   = uint8_t(_access);
+			m_firstMip = 0;
+			m_numMips  = UINT8_MAX;
+		}
+
+		void setBuffer(VertexBufferHandle _handle, Access::Enum _access)
+		{
+			m_samplerFlags = BGFX_SAMPLER_NONE;
+			m_firstLayer   = 0;
+			m_numLayers    = UINT16_MAX;
+			m_idx      = _handle.idx;
+			m_type     = uint8_t(Binding::VertexBuffer);
+			m_format   = 0;
+			m_access   = uint8_t(_access);
+			m_firstMip = 0;
+			m_numMips  = UINT8_MAX;
+		}
+
+		void setImage(TextureHandle _handle, uint8_t _mip, Access::Enum _access, TextureFormat::Enum _format)
+		{
+			m_samplerFlags = BGFX_SAMPLER_NONE;
+			m_firstLayer   = 0;
+			m_numLayers    = UINT16_MAX;
+			m_idx      = _handle.idx;
+			m_type     = uint8_t(Binding::Image);
+			m_format   = uint8_t(_format);
+			m_access   = uint8_t(_access);
+			m_firstMip = _mip;
+			m_numMips  = 1;
+		}
+
 		uint32_t m_samplerFlags;
+		uint16_t m_firstLayer;
+		uint16_t m_numLayers;
 		uint16_t m_idx;
 		uint8_t  m_type;
 		uint8_t  m_format;
 		uint8_t  m_access;
-		uint8_t  m_mip;
+		uint8_t  m_firstMip;
+		uint8_t  m_numMips;
 	};
 
 	struct Stream
@@ -1830,12 +1911,8 @@ namespace bgfx
 				for (uint32_t ii = 0; ii < BGFX_CONFIG_MAX_TEXTURE_SAMPLERS; ++ii)
 				{
 					Binding& bind = m_bind[ii];
-					bind.m_idx = kInvalidHandle;
-					bind.m_type = 0;
-					bind.m_samplerFlags = 0;
-					bind.m_format = 0;
-					bind.m_access = 0;
-					bind.m_mip = 0;
+					bind.reset();
+
 				}
 			}
 		};
@@ -3035,15 +3112,33 @@ namespace bgfx
 		void setTexture(uint8_t _stage, UniformHandle _sampler, TextureHandle _handle, uint32_t _flags)
 		{
 			Binding& bind = m_bind.m_bind[_stage];
-			bind.m_idx    = _handle.idx;
-			bind.m_type   = uint8_t(Binding::Texture);
-			bind.m_samplerFlags = (_flags&BGFX_SAMPLER_INTERNAL_DEFAULT)
-				? BGFX_SAMPLER_INTERNAL_DEFAULT
-				: _flags
-				;
-			bind.m_format = 0;
-			bind.m_access = 0;
-			bind.m_mip    = 0;
+			bind.setTexture(
+				  _handle
+				, 0 != (_flags&BGFX_SAMPLER_INTERNAL_DEFAULT)
+					? BGFX_SAMPLER_INTERNAL_DEFAULT
+					: _flags
+				);
+
+			if (isValid(_sampler) )
+			{
+				uint32_t stage = _stage;
+				setUniform(UniformType::Sampler, _sampler, &stage, 1);
+			}
+		}
+
+		void setTexture(uint8_t _stage, UniformHandle _sampler, TextureHandle _handle, uint16_t _firstLayer, uint16_t _numLayers, uint8_t _firstMip, uint8_t _numMips, uint32_t _flags)
+		{
+			Binding& bind = m_bind.m_bind[_stage];
+			bind.setTexture(
+				  _handle
+				, _firstLayer
+				, _numLayers
+				, _firstMip
+				, _numMips
+				, 0 != (_flags&BGFX_SAMPLER_INTERNAL_DEFAULT)
+					? BGFX_SAMPLER_INTERNAL_DEFAULT
+					: _flags
+				);
 
 			if (isValid(_sampler) )
 			{
@@ -3055,31 +3150,19 @@ namespace bgfx
 		void setBuffer(uint8_t _stage, IndexBufferHandle _handle, Access::Enum _access)
 		{
 			Binding& bind = m_bind.m_bind[_stage];
-			bind.m_idx    = _handle.idx;
-			bind.m_type   = uint8_t(Binding::IndexBuffer);
-			bind.m_format = 0;
-			bind.m_access = uint8_t(_access);
-			bind.m_mip    = 0;
+			bind.setIndexBuffer(_handle, _access);
 		}
 
 		void setBuffer(uint8_t _stage, VertexBufferHandle _handle, Access::Enum _access)
 		{
 			Binding& bind = m_bind.m_bind[_stage];
-			bind.m_idx    = _handle.idx;
-			bind.m_type   = uint8_t(Binding::VertexBuffer);
-			bind.m_format = 0;
-			bind.m_access = uint8_t(_access);
-			bind.m_mip    = 0;
+			bind.setBuffer(_handle, _access);
 		}
 
 		void setImage(uint8_t _stage, TextureHandle _handle, uint8_t _mip, Access::Enum _access, TextureFormat::Enum _format)
 		{
 			Binding& bind = m_bind.m_bind[_stage];
-			bind.m_idx    = _handle.idx;
-			bind.m_type   = uint8_t(Binding::Image);
-			bind.m_format = uint8_t(_format);
-			bind.m_access = uint8_t(_access);
-			bind.m_mip    = _mip;
+			bind.setImage(_handle, _mip, _access, _format);
 		}
 
 		void discard(uint8_t _flags)
@@ -3166,6 +3249,7 @@ namespace bgfx
 		void init()
 		{
 			bx::memSet(m_refCount,                  0, sizeof(m_refCount)               );
+			bx::memSet(m_stride,                    0, sizeof(m_stride)                 );
 			bx::memSet(m_vertexBufferRef,        0xff, sizeof(m_vertexBufferRef)        );
 			bx::memSet(m_dynamicVertexBufferRef, 0xff, sizeof(m_dynamicVertexBufferRef) );
 		}
@@ -3250,6 +3334,7 @@ namespace bgfx
 		VertexLayoutMap m_vertexLayoutMap;
 
 		uint16_t m_refCount[BGFX_CONFIG_MAX_VERTEX_LAYOUTS];
+		uint16_t m_stride[BGFX_CONFIG_MAX_VERTEX_LAYOUTS];
 		VertexLayoutHandle m_vertexBufferRef[BGFX_CONFIG_MAX_VERTEX_BUFFERS];
 		VertexLayoutHandle m_dynamicVertexBufferRef[BGFX_CONFIG_MAX_DYNAMIC_VERTEX_BUFFERS];
 	};
@@ -3758,7 +3843,7 @@ namespace bgfx
 		virtual void destroyProgram(ProgramHandle _handle) = 0;
 		virtual void* createTexture(TextureHandle _handle, const Memory* _mem, uint64_t _flags, uint8_t _skip, uint64_t _external) = 0;
 		virtual void updateTexture(TextureHandle _handle, uint8_t _side, uint8_t _mip, const Rect& _rect, uint16_t _z, uint16_t _depth, uint16_t _pitch, const Memory* _mem) = 0;
-		virtual void readTexture(TextureHandle _handle, void* _data, uint8_t _mip) = 0;
+		virtual void readTexture(TextureHandle _handle, void* _data, uint16_t _layer, uint8_t _mip) = 0;
 		virtual void resizeTexture(TextureHandle _handle, uint16_t _width, uint16_t _height, uint8_t _numMips, uint16_t _numLayers) = 0;
 		virtual void overrideInternal(TextureHandle _handle, uintptr_t _ptr, uint16_t _layerIndex) = 0;
 		virtual uintptr_t getInternal(TextureHandle _handle) = 0;
@@ -4069,6 +4154,8 @@ namespace bgfx
 				BX_TRACE("WARNING: Failed to allocate vertex layout handle (BGFX_CONFIG_MAX_VERTEX_LAYOUTS, max: %d).", BGFX_CONFIG_MAX_VERTEX_LAYOUTS);
 				return BGFX_INVALID_HANDLE;
 			}
+
+			m_vertexLayoutRef.m_stride[layoutHandle.idx] = _layout.m_stride;
 
 			CommandBuffer& cmdbuf = getCommandBuffer(CommandBuffer::CreateVertexLayout);
 			cmdbuf.write(layoutHandle);
@@ -5299,7 +5386,7 @@ namespace bgfx
 			textureDecRef(_handle);
 		}
 
-		BGFX_API_FUNC(uint32_t readTexture(TextureHandle _handle, void* _data, uint8_t _mip) )
+		BGFX_API_FUNC(uint32_t readTexture(TextureHandle _handle, void* _data, uint16_t _layer, uint8_t _mip) )
 		{
 			BGFX_MUTEX_SCOPE(m_resourceApiLock);
 
@@ -5308,22 +5395,30 @@ namespace bgfx
 			const TextureRef& ref = m_textureRef[_handle.idx];
 			BX_ASSERT(ref.isReadBack(), "Can't read from texture which was not created with BGFX_TEXTURE_READ_BACK.");
 			BX_ASSERT(_mip < ref.m_numMips, "Invalid mip: %d num mips:", _mip, ref.m_numMips);
-			BX_UNUSED(ref);
+			const uint16_t numLayers = uint16_t(ref.m_numLayers * (ref.m_cubeMap ? 6 : 1) );
+			BX_ASSERT(_layer < numLayers, "Invalid layer: %d num layers: %d", _layer, numLayers);
+			BX_UNUSED(ref, numLayers);
 
 			CommandBuffer& cmdbuf = getCommandBuffer(CommandBuffer::ReadTexture);
 			cmdbuf.write(_handle);
 			cmdbuf.write(_data);
+			cmdbuf.write(_layer);
 			cmdbuf.write(_mip);
 			return m_submit->m_frameNum + 2;
 		}
 
 		void resizeTexture(TextureHandle _handle, uint16_t _width, uint16_t _height, uint8_t _numMips, uint16_t _numLayers)
 		{
-			const TextureRef& ref = m_textureRef[_handle.idx];
+			TextureRef& ref = m_textureRef[_handle.idx];
 			BX_ASSERT(BackbufferRatio::Count != ref.m_bbRatio, "");
 
 			getTextureSizeFromRatio(BackbufferRatio::Enum(ref.m_bbRatio), _width, _height);
 			_numMips = calcNumMips(1 < _numMips, _width, _height);
+
+			ref.m_width     = _width;
+			ref.m_height    = _height;
+			ref.m_numMips   = _numMips;
+			ref.m_numLayers = _numLayers;
 
 			BX_TRACE("Resize %3d: %4dx%d %s"
 				, _handle.idx

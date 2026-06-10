@@ -1650,7 +1650,7 @@ struct DebugDrawEncoderImpl
 	void drawFrustum(const float* _viewProj)
 	{
 		bx::Plane planes[6] = { bx::InitNone, bx::InitNone, bx::InitNone, bx::InitNone, bx::InitNone, bx::InitNone };
-		buildFrustumPlanes(planes, _viewProj, bgfx::getCaps()->homogeneousDepth);
+		buildFrustumPlanes(planes, _viewProj);
 
 		const bx::Vec3 points[8] =
 		{

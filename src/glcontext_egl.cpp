@@ -33,6 +33,39 @@ namespace bgfx { namespace gl
 #	define EGL_CONTEXT_FLAG_NO_ERROR_BIT_KHR 0x00000008
 #endif // EGL_CONTEXT_FLAG_NO_ERROR_BIT_KHR
 
+// EGL_KHR_gl_colorspace tokens (Solar2D #30 sRGB-correct alpha blending). Some
+// older EGL headers lack these; define them so the sRGB backbuffer request can
+// be honored on GLES where there is no GL_FRAMEBUFFER_SRGB toggle.
+#ifndef EGL_GL_COLORSPACE_KHR
+#	define EGL_GL_COLORSPACE_KHR 0x309D
+#endif // EGL_GL_COLORSPACE_KHR
+#ifndef EGL_GL_COLORSPACE_SRGB_KHR
+#	define EGL_GL_COLORSPACE_SRGB_KHR 0x3089
+#endif // EGL_GL_COLORSPACE_SRGB_KHR
+
+// Solar2D #30: pick window-surface attribs honoring an sRGB backbuffer request.
+// When BGFX_RESET_SRGB_BACKBUFFER is set and the driver advertises
+// EGL_KHR_gl_colorspace, return attribs that put the surface in the sRGB
+// colorspace (GLES then encodes linear->sRGB on store, matching Vulkan's
+// BGFX_RESET_SRGB_BACKBUFFER). Otherwise return NULL (unchanged behavior).
+static const EGLint* s_getSrgbWindowSurfaceAttribs(EGLDisplay _display, uint32_t _reset)
+{
+	static const EGLint s_srgbAttribs[] =
+	{
+		EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR,
+		EGL_NONE
+	};
+	if (0 != (_reset & BGFX_RESET_SRGB_BACKBUFFER) )
+	{
+		const char* exts = eglQueryString(_display, EGL_EXTENSIONS);
+		if (NULL != exts && !bx::findIdentifierMatch(exts, "EGL_KHR_gl_colorspace").isEmpty() )
+		{
+			return s_srgbAttribs;
+		}
+	}
+	return NULL;
+}
+
 #if BGFX_USE_GL_DYNAMIC_LIB
 
 #define EGL_IMPORT                                                            \
@@ -545,7 +578,7 @@ WL_EGL_IMPORT
 				}
 #	endif // BX_PLATFORM_LINUX
 
-				m_surface = eglCreateWindowSurface(m_display, m_config, nwh, NULL);
+				m_surface = eglCreateWindowSurface(m_display, m_config, nwh, s_getSrgbWindowSurfaceAttribs(m_display, _resolution.reset) );
 			}
 
 			BGFX_FATAL(m_surface != EGL_NO_SURFACE, Fatal::UnableToInitialize, "Failed to create surface.");
@@ -666,7 +699,7 @@ WL_EGL_IMPORT
 			eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 			eglDestroySurface(m_display, m_surface);
 
-			m_surface = eglCreateWindowSurface(m_display, m_config, nwh, NULL);
+			m_surface = eglCreateWindowSurface(m_display, m_config, nwh, s_getSrgbWindowSurfaceAttribs(m_display, _resolution.reset) );
 			BGFX_FATAL(m_surface != EGL_NO_SURFACE, Fatal::UnableToInitialize, "Failed to create surface.");
 
 			EGLBoolean success = eglMakeCurrent(m_display, m_surface, m_surface, m_context);

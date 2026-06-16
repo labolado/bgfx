@@ -15,6 +15,11 @@
 #			include <bcm_host.h>
 #		endif // BX_PLATFORM_RPI
 
+#		if BX_PLATFORM_ANDROID
+#			include <android/data_space.h> // ADATASPACE_SRGB (Solar2D #30)
+#			include <dlfcn.h>              // runtime-resolve ANativeWindow_setBuffersDataSpace
+#		endif // BX_PLATFORM_ANDROID
+
 #define _EGL_CHECK(_check, _call)                                   \
 	BX_MACRO_BLOCK_BEGIN                                            \
 		EGLBoolean success = _call;                                 \
@@ -515,6 +520,24 @@ WL_EGL_IMPORT
 				, _resolution.height
 				, format
 				);
+
+			// Solar2D #30: when an sRGB backbuffer was requested, also tag the
+			// window buffer's dataspace as sRGB so it matches the sRGB EGL surface.
+			// Otherwise the buffer stays in the default (linear) dataspace while the
+			// drawable is sRGB, which some drivers (e.g. PowerVR/IMGSRV) report as a
+			// colorspace mismatch. ANativeWindow_setBuffersDataSpace is API 28+ while
+			// the engine targets minSdk 24, so resolve it at runtime via dlsym (a
+			// compile-time availability guard is rejected without a deployment target).
+			if (0 != (_resolution.reset & BGFX_RESET_SRGB_BACKBUFFER) )
+			{
+				typedef int32_t (*SetBuffersDataSpaceFn)(ANativeWindow*, int32_t);
+				static SetBuffersDataSpaceFn s_setBuffersDataSpace =
+					(SetBuffersDataSpaceFn)dlsym(RTLD_DEFAULT, "ANativeWindow_setBuffersDataSpace");
+				if (NULL != s_setBuffersDataSpace)
+				{
+					s_setBuffersDataSpace((ANativeWindow*)g_platformData.nwh, ADATASPACE_SRGB);
+				}
+			}
 
 #	elif BX_PLATFORM_RPI
 			DISPMANX_DISPLAY_HANDLE_T dispmanDisplay = vc_dispmanx_display_open(0);

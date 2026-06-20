@@ -5555,6 +5555,15 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 						continue;
 					}
 
+					// #079 defensive guard: skip draws whose pipeline state failed
+					// to build (m_rps == NULL). Renders nothing for that draw but
+					// avoids setRenderPipelineState(NULL) crashing the backend.
+					if (NULL == currentPso->m_rps)
+					{
+						currentProgram = BGFX_INVALID_HANDLE;
+						continue;
+					}
+
 					rce->setRenderPipelineState(currentPso->m_rps);
 
 					if (isValid(draw.m_instanceDataBuffer) )

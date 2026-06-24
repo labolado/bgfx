@@ -392,6 +392,8 @@ namespace bgfx { namespace wgpu
 		{ LANGUAGE_FEATURE(UniformBufferStandardLayout),          true, false },
 		{ LANGUAGE_FEATURE(SubgroupId),                           true, false },
 		{ LANGUAGE_FEATURE(TextureAndSamplerLet),                 true, false },
+		{ LANGUAGE_FEATURE(SubgroupUniformity),                   true, false },
+		{ LANGUAGE_FEATURE(ImmediateAddressSpace),                true, false },
 		{ LANGUAGE_FEATURE(ChromiumTestingUnimplemented),         true, false },
 		{ LANGUAGE_FEATURE(ChromiumTestingUnsafeExperimental),    true, false },
 		{ LANGUAGE_FEATURE(ChromiumTestingExperimental),          true, false },
@@ -401,8 +403,6 @@ namespace bgfx { namespace wgpu
 		{ LANGUAGE_FEATURE(TexelBuffers),                         true, false },
 		{ LANGUAGE_FEATURE(ChromiumPrint),                        true, false },
 		{ LANGUAGE_FEATURE(FragmentDepth),                        true, false },
-		{ LANGUAGE_FEATURE(ImmediateAddressSpace),                true, false },
-		{ LANGUAGE_FEATURE(SubgroupUniformity),                   true, false },
 
 #undef LANGUAGE_FEATURE
 	};
@@ -2742,17 +2742,20 @@ WGPU_IMPORT
 				murmur.add(program.m_fsh->m_hash);
 			}
 
-			for (BitMaskToIndexIteratorT it(_streamMask); !it.isDone(); it.next() )
+			if (UINT32_MAX != _streamMask)
 			{
-				const uint8_t idx = it.idx;
+				for (BitMaskToIndexIteratorT it(_streamMask); !it.isDone(); it.next() )
+				{
+					const uint8_t idx = it.idx;
 
-				uint16_t handle = _stream[idx].m_handle.idx;
-				const VertexBufferWGPU& vb = m_vertexBuffers[handle];
-				const uint16_t layoutIdx = isValid(_stream[idx].m_layoutHandle)
-					? _stream[idx].m_layoutHandle.idx
-					: vb.m_layoutHandle.idx;
+					uint16_t handle = _stream[idx].m_handle.idx;
+					const VertexBufferWGPU& vb = m_vertexBuffers[handle];
+					const uint16_t layoutIdx = isValid(_stream[idx].m_layoutHandle)
+						? _stream[idx].m_layoutHandle.idx
+						: vb.m_layoutHandle.idx;
 
-				murmur.add(m_vertexLayouts[layoutIdx].m_hash);
+					murmur.add(m_vertexLayouts[layoutIdx].m_hash);
+				}
 			}
 
 			murmur.add(layout.m_attributes, sizeof(layout.m_attributes) );
@@ -3036,7 +3039,8 @@ WGPU_IMPORT
 				const Binding& bind = _renderBind.m_bind[stage];
 				const ShaderBinding& shaderBind = _program.m_shaderBinding[stage];
 
-				if (isValid(shaderBind.uniformHandle) )
+				if (isValid(shaderBind.uniformHandle)
+				&&  kInvalidHandle != bind.m_idx)
 				{
 					switch (bind.m_type)
 					{
@@ -4123,7 +4127,7 @@ WGPU_IMPORT
 			rectPitch = (_rect.m_width / blockInfo.blockWidth) * blockInfo.blockSize;
 		}
 
-		const uint32_t bytesPerRow = UINT16_MAX == _pitch ? rectPitch : _pitch;
+		uint32_t bytesPerRow = UINT16_MAX == _pitch ? rectPitch : _pitch;
 		const uint32_t slicePitch  = rectPitch*_rect.m_height;
 
 		const bool convert = m_textureFormat != m_requestedFormat;
@@ -4133,10 +4137,10 @@ WGPU_IMPORT
 
 		if (convert)
 		{
+			bytesPerRow = rectPitch;
 			temp = (uint8_t*)bx::alloc(g_allocator, slicePitch);
-			bimg::imageDecodeToBgra8(g_allocator, temp, srcData, _rect.m_width, _rect.m_height, bytesPerRow, bimg::TextureFormat::Enum(m_requestedFormat) );
+			bimg::imageDecodeToBgra8(g_allocator, temp, srcData, _rect.m_width, _rect.m_height, rectPitch, bimg::TextureFormat::Enum(m_requestedFormat) );
 			srcData = temp;
-
 		}
 
 		const uint32_t width   = bx::min(bx::max(1u, bx::alignUp(m_width  >> _mip, blockInfo.blockWidth ) ), _rect.m_width);
@@ -4222,7 +4226,7 @@ WGPU_IMPORT
 		return sampler;
 	}
 
-	WGPUTextureView TextureWGPU::getTextureView(uint8_t _baseMipLevel, uint8_t _mipLevelCount, bool _storage, uint16_t _baseArrayLayer, uint16_t _arrayLayerCount) const
+	WGPUTextureView TextureWGPU::getTextureView(uint8_t _baseMipLevel, uint8_t _mipLevelCount, bool _storage, uint16_t _baseArrayLayer, uint16_t _arrayLayerCount, bool _force2DArray) const
 	{
 		bx::HashMurmur3 murmur;
 		murmur.begin();
@@ -4232,6 +4236,7 @@ WGPU_IMPORT
 		murmur.add(_storage);
 		murmur.add(_baseArrayLayer);
 		murmur.add(_arrayLayerCount);
+		murmur.add(_force2DArray);
 		const uint32_t hash = murmur.end();
 
 		WGPUTextureView textureView = s_renderWGPU->m_textureViewStateCache.find(hash);
@@ -4250,6 +4255,11 @@ WGPU_IMPORT
 				{
 					tvd = WGPUTextureViewDimension_2DArray;
 				}
+			}
+
+			if (_force2DArray)
+			{
+				tvd = WGPUTextureViewDimension_2DArray;
 			}
 
 			WGPUTextureViewDescriptor textureViewDesc =
@@ -5393,7 +5403,7 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 				WGPUTextureView view;
 				if (ii < numMips)
 				{
-					view = _texture.getTextureView(uint8_t(topMip + 1 + ii), 1, true, true);
+					view = _texture.getTextureView(uint8_t(topMip + 1 + ii), 1, true, 0, UINT16_MAX, true);
 				}
 				else
 				{
@@ -5425,7 +5435,7 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 						.offset      = 0,
 						.size        = 0,
 						.sampler     = NULL,
-						.textureView = _texture.getTextureView(uint8_t(topMip), 1, false, true),
+						.textureView = _texture.getTextureView(uint8_t(topMip), 1, false, 0, UINT16_MAX, true),
 					};
 
 					const uint32_t samplerFlags = 0
@@ -5536,8 +5546,6 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 		currentState.m_stateFlags = BGFX_STATE_NONE;
 		currentState.m_stencil    = packStencil(BGFX_STENCIL_NONE, BGFX_STENCIL_NONE);
 
-		uint32_t currentNumVertices = 0;
-
 		static ViewState viewState;
 		viewState.reset(_render);
 
@@ -5609,7 +5617,7 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 
 				const uint32_t    itemIdx    = _render->m_sortValues[item];
 				const RenderItem& renderItem = _render->m_renderItem[itemIdx];
-				const RenderBind& renderBind = _render->m_renderItemBind[itemIdx];
+				const RenderBind& renderBind = _render->m_renderBind[isCompute ? renderItem.compute.m_bindIdx : renderItem.draw.m_bindIdx];
 				++item;
 
 				if (viewChanged)
@@ -5976,8 +5984,6 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 				bool constantsChanged = draw.m_uniformBegin < draw.m_uniformEnd;
 				rendererUpdateUniforms(this, _render->m_uniformBuffer[draw.m_uniformIdx], draw.m_uniformBegin, draw.m_uniformEnd);
 
-				currentNumVertices = draw.m_numVertices;
-
 				const uint64_t state = draw.m_stateFlags;
 
 				const RenderPipeline& renderPipeline = *getPipeline(
@@ -6217,7 +6223,16 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 
 				if (0 != currentState.m_streamMask)
 				{
-					uint32_t numVertices       = currentNumVertices;
+					uint32_t numVertices = draw.m_numVertices;
+
+					if (UINT32_MAX == numVertices)
+					{
+						const VertexBufferWGPU& vb = m_vertexBuffers[currentState.m_stream[0].m_handle.idx];
+						const uint16_t decl = isValid(draw.m_stream[0].m_layoutHandle) ? draw.m_stream[0].m_layoutHandle.idx : vb.m_layoutHandle.idx;
+						const VertexLayout& layout = m_vertexLayouts[decl];
+						numVertices = vb.m_size/layout.m_stride;
+					}
+
 					uint32_t numIndices        = 0;
 					uint32_t numPrimsSubmitted = 0;
 					uint32_t numInstances      = 0;
@@ -6469,10 +6484,11 @@ m_resolution.formatColor = TextureFormat::BGRA8;
 					);
 
 				double elapsedCpuMs = double(frameTime)*toMs;
-				tvm.printf(10, pos++, 0x8b, "   Submitted: %5d (draw %5d, compute %4d) / CPU %7.4f [ms] %c GPU %7.4f [ms] (latency %d) "
+				tvm.printf(10, pos++, 0x8b, "   Submitted: %5d (draw %5d, compute %4d) / Binds: %4d / CPU %7.4f [ms] %c GPU %7.4f [ms] (latency %d) "
 					, _render->m_numRenderItems
 					, statsKeyType[0]
 					, statsKeyType[1]
+					, _render->m_numRenderBinds
 					, elapsedCpuMs
 					, elapsedCpuMs > maxGpuElapsed ? '>' : '<'
 					, maxGpuElapsed

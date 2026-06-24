@@ -50,6 +50,8 @@ BGFX_C99_STRUCT_SIZE_CHECK(bgfx::InternalData,          bgfx_internal_data_t);
 
 #undef BGFX_C99_STRUCT_SIZE_CHECK
 
+#if BGFX_CONFIG_C99_API
+
 BGFX_C_API void bgfx_attachment_init(bgfx_attachment_t* _this, bgfx_texture_handle_t _handle, bgfx_access_t _access, uint16_t _layer, uint16_t _numLayers, uint16_t _mip, uint8_t _resolve)
 {
 	bgfx::Attachment* This = (bgfx::Attachment*)_this;
@@ -443,6 +445,11 @@ BGFX_C_API void bgfx_destroy_program(bgfx_program_handle_t _handle)
 BGFX_C_API bool bgfx_is_texture_valid(uint16_t _depth, bool _cubeMap, uint16_t _numLayers, bgfx_texture_format_t _format, uint64_t _flags)
 {
 	return bgfx::isTextureValid(_depth, _cubeMap, _numLayers, (bgfx::TextureFormat::Enum)_format, _flags);
+}
+
+BGFX_C_API bool bgfx_is_video_codec_valid(bgfx_video_codec_t _codec, uint8_t _chroma, uint8_t _bitDepth, uint16_t _codedWidth, uint16_t _codedHeight, uint8_t _maxDpbSlots, uint8_t _maxActiveReferences)
+{
+	return bgfx::isVideoCodecValid((bgfx::VideoCodec::Enum)_codec, _chroma, _bitDepth, _codedWidth, _codedHeight, _maxDpbSlots, _maxActiveReferences);
 }
 
 BGFX_C_API bool bgfx_is_frame_buffer_valid(uint8_t _num, const bgfx_attachment_t* _attachment)
@@ -1396,6 +1403,7 @@ BGFX_C_API bgfx_interface_vtbl_t* bgfx_get_interface(uint32_t _version)
 			bgfx_create_compute_program,
 			bgfx_destroy_program,
 			bgfx_is_texture_valid,
+			bgfx_is_video_codec_valid,
 			bgfx_is_frame_buffer_valid,
 			bgfx_calc_texture_size,
 			bgfx_create_texture,
@@ -1539,3 +1547,5 @@ BGFX_C_API bgfx_interface_vtbl_t* bgfx_get_interface(uint32_t _version)
 
 	return NULL;
 }
+
+#endif // BGFX_CONFIG_C99_API

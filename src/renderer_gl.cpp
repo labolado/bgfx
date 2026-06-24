@@ -7809,7 +7809,7 @@ namespace bgfx { namespace gl
 
 				const uint32_t itemIdx       = _render->m_sortValues[item];
 				const RenderItem& renderItem = _render->m_renderItem[itemIdx];
-				const RenderBind& renderBind = _render->m_renderItemBind[itemIdx];
+				const RenderBind& renderBind = _render->m_renderBind[isCompute ? renderItem.compute.m_bindIdx : renderItem.draw.m_bindIdx];
 				++item;
 
 				if (viewChanged)
@@ -8463,20 +8463,23 @@ namespace bgfx { namespace gl
 					}
 
 					{
-						for (BitMaskToIndexIteratorT it(draw.m_streamMask); !it.isDone(); it.next() )
+						if (UINT32_MAX != draw.m_streamMask)
 						{
-							const uint8_t idx = it.idx;
-
-							if (currentState.m_stream[idx].m_handle.idx != draw.m_stream[idx].m_handle.idx)
+							for (BitMaskToIndexIteratorT it(draw.m_streamMask); !it.isDone(); it.next() )
 							{
-								currentState.m_stream[idx].m_handle = draw.m_stream[idx].m_handle;
-								bindAttribs = true;
-							}
+								const uint8_t idx = it.idx;
 
-							if (currentState.m_stream[idx].m_startVertex != draw.m_stream[idx].m_startVertex)
-							{
-								currentState.m_stream[idx].m_startVertex = draw.m_stream[idx].m_startVertex;
-								bindAttribs = true;
+								if (currentState.m_stream[idx].m_handle.idx != draw.m_stream[idx].m_handle.idx)
+								{
+									currentState.m_stream[idx].m_handle = draw.m_stream[idx].m_handle;
+									bindAttribs = true;
+								}
+
+								if (currentState.m_stream[idx].m_startVertex != draw.m_stream[idx].m_startVertex)
+								{
+									currentState.m_stream[idx].m_startVertex = draw.m_stream[idx].m_startVertex;
+									bindAttribs = true;
+								}
 							}
 						}
 
@@ -8885,10 +8888,11 @@ namespace bgfx { namespace gl
 					);
 
 				double elapsedCpuMs = double(frameTime)*toMs;
-				tvm.printf(10, pos++, 0x8b, "    Submitted: %5d (draw %5d, compute %4d) / CPU %7.4f [ms] %c GPU %7.4f [ms] (latency %d) "
+				tvm.printf(10, pos++, 0x8b, "    Submitted: %5d (draw %5d, compute %4d) / Binds: %4d / CPU %7.4f [ms] %c GPU %7.4f [ms] (latency %d) "
 					, _render->m_numRenderItems
 					, statsKeyType[0]
 					, statsKeyType[1]
+					, _render->m_numRenderBinds
 					, elapsedCpuMs
 					, elapsedCpuMs > elapsedGpuMs ? '>' : '<'
 					, maxGpuElapsed

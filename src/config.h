@@ -175,9 +175,10 @@
 #	error "Can't define both BGFX_CONFIG_RENDERER_OPENGL and BGFX_CONFIG_RENDERER_OPENGLES"
 #endif // BGFX_CONFIG_RENDERER_OPENGL && BGFX_CONFIG_RENDERER_OPENGLES
 
-// Enable hardware video decoder.
+// Enable hardware video decoder. Disabled for Solar2D (no video decode use case,
+// avoids VideoToolbox/MediaCodec framework dependency).
 #ifndef BGFX_CONFIG_VIDEO
-#	define BGFX_CONFIG_VIDEO 1
+#	define BGFX_CONFIG_VIDEO 0
 #endif // BGFX_CONFIG_VIDEO
 
 #define BGFX_CONFIG_VIDEO_DIRECT3D11 (true \

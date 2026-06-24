@@ -452,7 +452,11 @@ static_assert(BGFX_CONFIG_MAX_VERTEX_STREAMS < 32, "Must be less than 32!");
 /// profiler scopes for frame, submit, resource, and view operations.
 /// Default is 0 (disabled).
 #ifndef BGFX_CONFIG_PROFILER
-#	define BGFX_CONFIG_PROFILER 0
+#	ifdef TRACY_ENABLE
+#		define BGFX_CONFIG_PROFILER 1
+#	else
+#		define BGFX_CONFIG_PROFILER 0
+#	endif
 #endif // BGFX_CONFIG_PROFILER
 
 /// File path for RenderDoc capture log output. Default is "temp/bgfx".

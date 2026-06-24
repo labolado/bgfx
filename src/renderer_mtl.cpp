@@ -4249,6 +4249,7 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
 			if (!getSkipPresentState())
 			{
 				m_drawable = occluded ? NULL : m_metalLayer->nextDrawable();
+				setLastFrameOccluded(m_drawable == NULL);
 			}
 
 			if (m_drawable != NULL)

@@ -3935,6 +3935,10 @@ namespace bgfx
 	/// Skip present/flip on the next frame() call (for offscreen capture without flash).
 	void setSkipPresent(bool _skip);
 
+	/// Returns true if the Metal renderer's last frame had drawable=NULL (window occluded).
+	/// Set by the Metal renderer; read by the caller (API thread) to detect de-occlusion.
+	bool wasLastFrameOccluded();
+
 	/// Override internal texture with externally created texture. Previously
 	/// created internal texture will released.
 	///

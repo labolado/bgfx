@@ -3817,6 +3817,8 @@ namespace bgfx
 
 	// Defined in bgfx.cpp — no struct members needed, avoids layout changes
 	bool getSkipPresentState();
+	void setLastFrameOccluded(bool _occ);
+	bool wasLastFrameOccluded();
 
 	struct BX_NO_VTABLE RendererContextI
 	{

@@ -467,6 +467,7 @@ namespace bgfx
 
 	// Static globals — NOT in any struct to avoid layout changes
 	static std::atomic<uint32_t> s_skipPresent{0};
+	static std::atomic<uint32_t> s_lastFrameOccluded{0};
 
 	uintptr_t getInternalTexturePtr(TextureHandle _handle)
 	{
@@ -484,6 +485,16 @@ namespace bgfx
 	bool getSkipPresentState()
 	{
 		return s_skipPresent.load(std::memory_order_acquire) != 0;
+	}
+
+	void setLastFrameOccluded(bool _occ)
+	{
+		s_lastFrameOccluded.store(_occ ? 1u : 0u, std::memory_order_release);
+	}
+
+	bool wasLastFrameOccluded()
+	{
+		return s_lastFrameOccluded.load(std::memory_order_acquire) != 0;
 	}
 
 	uintptr_t overrideInternal(TextureHandle _handle, uintptr_t _ptr, uint16_t _layerIndex)

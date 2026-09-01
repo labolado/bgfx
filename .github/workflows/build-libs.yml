@@ -83,22 +83,30 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         working-directory: bgfx
         run: |
-          make -C .build/projects/gmake-ios-arm64 config=debug   bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu)
-          make -C .build/projects/gmake-ios-arm64 config=release  bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu)
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          make -C .build/projects/gmake-ios-arm64 config=debug   bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu) CFLAGS="-isysroot $SDKROOT" CXXFLAGS="-isysroot $SDKROOT"
+          make -C .build/projects/gmake-ios-arm64 config=release  bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu) CFLAGS="-isysroot $SDKROOT" CXXFLAGS="-isysroot $SDKROOT"
 
       - name: Build bgfx iOS simulator (fat arm64 + x86_64)
         if: steps.check.outputs.exists == 'false'
         working-directory: bgfx
         run: |
-          make -C .build/projects/gmake-ios-simulator config=release bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu)
+          SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          make -C .build/projects/gmake-ios-simulator config=release bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu) CFLAGS="-isysroot $SDKROOT -I../../../../bx/include/compat/ios" CXXFLAGS="-isysroot $SDKROOT -I../../../../bx/include/compat/ios"
+          # Build x86_64 simulator slice (for Intel Mac simulator support).
+          # -msse4.2 mirrors the bx osx-x64 toolchain config; the genie ios-simulator
+          # project targets arm64 + NEON and carries no -msse* flag, so without it
+          # bx simd128_sse.inl fails on _mm_dp_ps / _mm_round_ps.
           cp -r .build/projects/gmake-ios-simulator .build/projects/gmake-ios-simulator-x86
           find .build/projects/gmake-ios-simulator-x86 -name "*.make" -exec \
             sed -i '' \
-              -e 's/-arch arm64/-arch x86_64/g' \
+              -e 's/-arch arm64/-arch x86_64 -msse4.2/g' \
               -e 's|../../ios-simulator/|../../ios-simulator-x86/|g' \
             {} \;
-          make -C .build/projects/gmake-ios-simulator-x86 config=release bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu) \
-            || echo "x86_64 simulator build failed, continuing with arm64 only"
+          # ARCH is $(empty) in the genie makefile; clang would default to the host
+          # arch (arm64 on Apple Silicon), so pass it explicitly for the cross-compile.
+          make -C .build/projects/gmake-ios-simulator-x86 config=release bgfx bx bimg bimg_decode -j$(sysctl -n hw.ncpu) ARCH="-arch x86_64 -msse4.2" CFLAGS="-isysroot $SDKROOT -I../../../../bx/include/compat/ios" CXXFLAGS="-isysroot $SDKROOT -I../../../../bx/include/compat/ios"
+          # Merge into fat binaries
           if [ -d .build/ios-simulator-x86/bin ]; then
             for arm_lib in .build/ios-simulator/bin/lib*.a; do
               name=$(basename "$arm_lib")
@@ -109,6 +117,17 @@ jobs:
               fi
             done
           fi
+          # Sanity: every published simulator lib must carry both slices. A partial
+          # set links fine on its own but breaks downstream, because a lib that got
+          # x86_64 then references symbols from one that did not.
+          for lib in .build/ios-simulator/bin/lib*.a; do
+            ARCHS=$(lipo -info "$lib" | sed -E 's/.*architectures? in the .*: //')
+            echo "$(basename "$lib"): $ARCHS"
+            if ! echo "$ARCHS" | grep -q arm64 || ! echo "$ARCHS" | grep -q x86_64; then
+              echo "ERROR: $(basename "$lib") needs arm64+x86_64, got: $ARCHS" >&2
+              exit 1
+            fi
+          done
 
       - name: Create universal macOS libs (arm64 + x64)
         if: steps.check.outputs.exists == 'false'
